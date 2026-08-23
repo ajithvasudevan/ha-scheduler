@@ -1,5 +1,10 @@
 # Schedules — a daily on/off scheduler for Home Assistant
 
+[![hacs: custom repository](https://img.shields.io/badge/HACS-custom%20repository-41BDF5.svg?style=flat-square)](https://hacs.xyz/docs/faq/custom_repositories/)
+[![Home Assistant 2024.7+](https://img.shields.io/badge/Home%20Assistant-2024.7%2B-41BDF5.svg?style=flat-square&logo=home-assistant&logoColor=white)](https://www.home-assistant.io/)
+[![release](https://img.shields.io/github/v/release/ajithvasudevan/ha-scheduler?style=flat-square&color=41BDF5)](https://github.com/ajithvasudevan/ha-scheduler/releases)
+[![licence: MIT](https://img.shields.io/badge/licence-MIT-blue.svg?style=flat-square)](LICENSE)
+
 A full-screen **Schedules** panel in the sidebar. Pick a device, give it on and off
 times, and it repeats every day — through restarts, and without replaying missed edges.
 
@@ -18,23 +23,45 @@ no Lovelace resource to add, no dashboard to build.
 
 ## Installing
 
-### HACS (custom repository)
+This is not in the HACS default store, so HACS has to be pointed at it once. That is
+what "custom repository" means below — after that it updates like anything else.
 
-1. HACS → ⋮ → **Custom repositories**.
-2. Repository: this repository's URL. Type: **Integration**. Add.
-3. Install **Schedules (HA Scheduler)**, then restart Home Assistant.
-4. Settings → Devices & services → **Add integration** → *Schedules*.
+### HACS
 
-### Manually
+[![Open your Home Assistant instance and open this repository inside HACS.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=ajithvasudevan&repository=ha-scheduler&category=integration)
 
-1. Copy `custom_components/ha_scheduler/` into your `config/custom_components/`.
+That button adds the repository and opens it. Then **Download**, and restart Home
+Assistant.
+
+Prefer to do it by hand:
+
+1. **HACS** → **⋮** (top right) → **Custom repositories**.
+2. Repository: `https://github.com/ajithvasudevan/ha-scheduler` — Type: **Integration**
+   → **Add**.
+3. Search HACS for **Schedules**, open it, **Download**.
+4. Restart Home Assistant.
+
+### Manually, without HACS
+
+1. Copy `custom_components/ha_scheduler/` into your `config/custom_components/`, so you
+   end up with `config/custom_components/ha_scheduler/manifest.json`.
 2. Restart Home Assistant.
-3. Settings → Devices & services → **Add integration** → *Schedules*.
 
-**Schedules** then appears in the sidebar. Nothing else to configure.
+### Then, either way
 
-> Set up with `ha_scheduler:` in `configuration.yaml` before? That still works: the
-> key is imported into a config entry on the next start, and you can delete the line.
+[![Open your Home Assistant instance and start setting up a new integration.](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=ha_scheduler)
+
+Or: **Settings → Devices & services → Add integration → Schedules**. There is nothing
+to fill in — confirm the dialog and **Schedules** appears in the sidebar.
+
+> Prefer YAML? `ha_scheduler:` on its own line in `configuration.yaml` is imported into
+> a config entry on the next start, and the line can then be deleted.
+
+### Updating
+
+HACS offers the update; take it and restart. The panel is served by the integration
+with caching switched off, so there is no browser cache to clear and no Lovelace
+resource to re-version — a page reload is enough.
 
 ### Requirements
 
