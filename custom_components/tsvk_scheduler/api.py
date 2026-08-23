@@ -11,6 +11,7 @@ once and stores. No user token is ever read, and nothing leaves the machine.
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 from typing import Any
@@ -23,6 +24,13 @@ from homeassistant.helpers.storage import Store
 from .const import STORAGE_KEY, STORAGE_VERSION, SYSTEM_USER_NAME
 
 _LOGGER = logging.getLogger(__name__)
+
+
+async def _maybe_await(value: Any) -> Any:
+    """Home Assistant's auth manager has been turning coroutines into plain calls one
+    release at a time — `async_get_refresh_token` is awaitable on 2026.5 and not on
+    2026.8. Accept either, so one copy of this integration works on both."""
+    return await value if inspect.isawaitable(value) else value
 
 
 class SelfApi:
@@ -44,18 +52,20 @@ class SelfApi:
         data = await self._store.async_load() or {}
         refresh = None
         if token_id := data.get("refresh_token_id"):
-            refresh = await self.hass.auth.async_get_refresh_token(token_id)
+            refresh = await _maybe_await(self.hass.auth.async_get_refresh_token(token_id))
         if refresh is None:
             user = None
-            for candidate in await self.hass.auth.async_get_users():
+            for candidate in await _maybe_await(self.hass.auth.async_get_users()):
                 if candidate.name == SYSTEM_USER_NAME and candidate.system_generated:
                     user = candidate
                     break
             if user is None:
-                user = await self.hass.auth.async_create_system_user(
-                    SYSTEM_USER_NAME, group_ids=[GROUP_ID_ADMIN]
+                user = await _maybe_await(
+                    self.hass.auth.async_create_system_user(
+                        SYSTEM_USER_NAME, group_ids=[GROUP_ID_ADMIN]
+                    )
                 )
-            refresh = await self.hass.auth.async_create_refresh_token(user)
+            refresh = await _maybe_await(self.hass.auth.async_create_refresh_token(user))
             await self._store.async_save({"refresh_token_id": refresh.id})
             _LOGGER.info("Created the %s system user and refresh token", SYSTEM_USER_NAME)
         self._token = self.hass.auth.async_create_access_token(refresh)
