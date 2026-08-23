@@ -120,10 +120,11 @@ run('minute select offers all 60 minutes', ()=>{
   if(n!==60) throw new Error('minute options='+n);
   if(!m[1].includes(">07<") || !m[1].includes(">59<")) throw new Error('missing non-multiple-of-5 minutes');
 });
-run('hour select offers all 24 hours', ()=>{
+run('hour select offers all 24 hours plus the one-way marker', ()=>{
   const m = dlg.match(/data-p='h'>([\s\S]*?)<\/select>/);
   const n = (m[1].match(/<option /g)||[]).length;
-  if(n!==24) throw new Error('hour options='+n);
+  if(n!==25) throw new Error('hour options='+n);
+  if(!m[1].includes(">--<")) throw new Error('no -- option');
 });
 run('granularity picker is gone', ()=>{ if(dlg.includes("data-act='step'")) throw new Error('step control still rendered'); });
 
@@ -228,6 +229,85 @@ run('editing a time never reorders the rows', ()=>{
   setT(0,'s','h',18);
   const w=p._dialog.windows;
   if(w[0].s!==1080 || w[1].s!==120) throw new Error('reordered: '+JSON.stringify(w));
+});
+
+// --- one-way entries: "--" for one hour -------------------------------------
+// This block swaps the model for its own fixtures, and it runs before MODEL0 is
+// captured further down, so it puts the shared one back itself.
+const MODEL_BEFORE_ONE_WAY = p._model;
+const unsetT = (i,w) => p._onChange('time', {dataset:{i:String(i), w:w, p:'h'}, value:''}, {});
+
+run('setting the start hour to -- makes the entry turn-off-only', ()=>{
+  openEdit([{s:1200,e:1320}]);
+  unsetT(0,'s');
+  const w=p._dialog.windows[0];
+  if(w.s!==null) throw new Error('start not cleared: '+JSON.stringify(w));
+  if(w.e!==1320) throw new Error('end disturbed: '+JSON.stringify(w));
+});
+run('the row says it only switches one way', ()=>{
+  p._render();
+  const h=dlgHtml();
+  if(!h.includes("class='chip oneway'>off only")) throw new Error('no one-way chip');
+  if(!h.includes("<span class='wlen'>—</span>")) throw new Error('length still claimed');
+});
+run('the cleared side shows -- and its minutes are locked', ()=>{
+  const h=dlgHtml();
+  const sel=h.match(/data-w='s' data-p='m'[^>]*>/)[0];
+  if(!sel.includes('disabled')) throw new Error('minute select still live: '+sel);
+  if(!h.includes("<option value='' selected>--</option>")) throw new Error('no -- shown');
+});
+run('the other side refuses to be cleared as well', ()=>{
+  unsetT(0,'e');
+  const w=p._dialog.windows[0];
+  if(w.e===null) throw new Error('both sides cleared');
+  if(!/One of the two times/.test(p._toast)) throw new Error('no explanation: '+p._toast);
+});
+run('-- is offered as disabled on the side that must stay set', ()=>{
+  const h=dlgHtml();
+  const hourSel=h.match(/data-w='e' data-p='h'>([\s\S]*?)<\/select>/)[1];
+  if(!hourSel.includes("<option value='' disabled>--</option>")) throw new Error('-- not blocked: '+hourSel.slice(0,80));
+});
+run('giving the hour back turns it into an ordinary window again', ()=>{
+  setT(0,'s','h',20);
+  const w=p._dialog.windows[0];
+  if(JSON.stringify(w)!==JSON.stringify({s:1200,e:1320})) throw new Error(JSON.stringify(w));
+});
+run('the time bar marks the moment and the way it acts', ()=>{
+  openEdit([{s:null,e:1320},{s:360,e:null}]);
+  const h=dlgHtml();
+  if(!h.includes("class='edge off'")) throw new Error('no turn-off marker');
+  if(!h.includes("class='edge on'")) throw new Error('no turn-on marker');
+  if((h.match(/class='edge-line'/g)||[]).length!==2) throw new Error('missing marker lines');
+  if(!h.includes('Turns off at 22:00')) throw new Error('no tooltip for the off edge');
+  if(!h.includes('Turns on at 06:00')) throw new Error('no tooltip for the on edge');
+});
+run('one-way entries paint no band and claim no on-time', ()=>{
+  const h=dlgHtml();
+  if(h.includes("class='seg'")) throw new Error('band drawn for a one-way entry');
+  if(h.includes('On for')) throw new Error('daily total claimed for one-way entries');
+});
+run('a card shows one-way entries as moments, not ranges', ()=>{
+  p._dialog=null;
+  p._model={v:1,rules:[{id:'r1',name:'Gate light',schedule:null,
+    targets:['switch.gate_light'],windows:[{s:null,e:1320}],enabled:true}]};
+  p._render();
+  const h=p.shadowRoot.innerHTML;
+  if(!h.includes('Turns off at 22:00')) throw new Error('no moment chip');
+  if(!h.includes('Switches one way only')) throw new Error('no explanation in the footer');
+  if(!h.includes('left alone in between')) throw new Error('footer does not say it stops there');
+  if(h.includes('Should be')) throw new Error('claims a state it does not hold');
+  if(!h.includes("class='edge off'")) throw new Error('no marker on the card time bar');
+});
+run('Restore now ignores rules that hold no state', ()=>{
+  if(p._mismatched().length) throw new Error('one-way rule counted as restorable');
+});
+run('the card pill reports what the device actually is', ()=>{
+  const h=p.shadowRoot.innerHTML;
+  if(!/<span class='pill '>Off<\/span>/.test(h)) throw new Error('pill not showing the live state');
+});
+run('shared fixture restored after the one-way tests', ()=>{
+  p._model=MODEL_BEFORE_ONE_WAY; p._dialog=null; p._render();
+  if(p._model.rules.length!==2) throw new Error('fixture not restored');
 });
 
 // --- overlaps are drawn, not merged -----------------------------------------

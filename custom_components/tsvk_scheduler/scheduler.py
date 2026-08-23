@@ -27,7 +27,7 @@ from .const import (
     MIRROR_PATH,
     MIRROR_TITLE,
 )
-from .engine import build_engine, days_payload
+from .engine import build_engine, days_payload, has_edges
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -96,6 +96,16 @@ class Scheduler:
 
     # --------------------------------------------------------------- services
 
+    @staticmethod
+    def _new_rule_id(model: dict, wanted: str | None) -> str:
+        used = {r.get("id") for r in model["rules"]}
+        if wanted and wanted not in used:
+            return wanted
+        while True:
+            candidate = f"r{secrets.token_hex(4)}"
+            if candidate not in used:
+                return candidate
+
     async def async_save_rule(self, call: ServiceCall) -> dict:
         model = await self.async_model()
         rule_id = call.data.get("rule_id")
@@ -106,28 +116,48 @@ class Scheduler:
 
         rule = next((r for r in model["rules"] if r.get("id") == rule_id), None) if rule_id else None
         days = days_payload(windows)
+        # A one-way entry cannot be written as a schedule block, and a helper covering
+        # only part of the rule would drive the device between the moments the rule
+        # cares about. So a rule with any of them keeps no helper at all.
+        one_way = has_edges(windows)
 
-        if rule is None or not rule.get("schedule"):
+        if one_way:
+            if rule is not None and rule.get("schedule"):
+                try:
+                    await self.api.async_ws(
+                        [{"type": "schedule/delete", "schedule_id": rule["schedule"].split(".")[1]}]
+                    )
+                except RuntimeError as err:
+                    _LOGGER.warning("Schedule helper already gone for %s: %s", rule_id, err)
+                rule["schedule"] = None
+            if rule is None:
+                rule = {
+                    "id": self._new_rule_id(model, rule_id),
+                    "name": name,
+                    "schedule": None,
+                    "targets": [],
+                    "windows": [],
+                    "enabled": True,
+                }
+                model["rules"].append(rule)
+        elif rule is None or not rule.get("schedule"):
             created = (
                 await self.api.async_ws(
                     [{"type": "schedule/create", "name": name, "icon": "mdi:calendar-clock", **days}]
                 )
             )[0]
-            used = {r.get("id") for r in model["rules"]}
-            new_id = rule_id if rule_id and rule_id not in used else None
-            while new_id is None:
-                candidate = f"r{secrets.token_hex(4)}"
-                if candidate not in used:
-                    new_id = candidate
-            rule = {
-                "id": new_id,
-                "name": name,
-                "schedule": f"schedule.{created['id']}",
-                "targets": [],
-                "windows": [],
-                "enabled": True,
-            }
-            model["rules"].append(rule)
+            if rule is not None:
+                rule["schedule"] = f"schedule.{created['id']}"
+            else:
+                rule = {
+                    "id": self._new_rule_id(model, rule_id),
+                    "name": name,
+                    "schedule": f"schedule.{created['id']}",
+                    "targets": [],
+                    "windows": [],
+                    "enabled": True,
+                }
+                model["rules"].append(rule)
         else:
             await self.api.async_ws(
                 [

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Any
 
 import voluptuous as vol
 
@@ -71,12 +72,20 @@ def _target(entity_id: str) -> str:
     return entity_id
 
 
-WINDOW_SCHEMA = vol.Schema(
-    {
-        vol.Required("s"): vol.All(vol.Coerce(int), vol.Range(min=0, max=1439)),
-        vol.Required("e"): vol.All(vol.Coerce(int), vol.Range(min=0, max=1439)),
-    }
-)
+# A side may be null, which makes the entry one-way: a null start means the rule only
+# turns the device off at the end time, a null end that it only turns it on. Both null
+# would say nothing at all, so that is rejected.
+_MINUTE = vol.Any(None, vol.All(vol.Coerce(int), vol.Range(min=0, max=1439)))
+
+
+def _window(value: Any) -> dict:
+    window = vol.Schema({vol.Required("s"): _MINUTE, vol.Required("e"): _MINUTE})(value)
+    if window["s"] is None and window["e"] is None:
+        raise vol.Invalid("a window needs a start time, an end time, or both")
+    return window
+
+
+WINDOW_SCHEMA = _window
 
 SAVE_SCHEMA = vol.Schema(
     {

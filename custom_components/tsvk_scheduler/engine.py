@@ -20,11 +20,34 @@ __all__ = [
     "ALLOWED_DOMAINS",
     "build_engine",
     "days_payload",
+    "has_edges",
+    "intervals_of",
+    "is_edge",
     "merge_spans",
     "to_spans",
     "win_len",
     "windows_to_blocks",
 ]
+
+
+def is_edge(w: dict) -> bool:
+    """A window with one side unset is an *edge*: "turn on at 06:00" or "turn off at
+    22:00", saying nothing about the rest of the day. A rule holding any of them
+    switches only at the moments it lists, so it asserts no state in between and is
+    never restored at boot or by an apply."""
+    return w.get("s") is None or w.get("e") is None
+
+
+def has_edges(windows: list[dict] | None) -> bool:
+    return any(is_edge(w) for w in windows or [])
+
+
+def intervals_of(windows: list[dict] | None) -> list[dict]:
+    return [w for w in windows or [] if not is_edge(w)]
+
+
+def _clock(minutes: int) -> str:
+    return "%02d:%02d:00" % (minutes // 60, minutes % 60)
 
 
 def win_len(w: dict) -> int:
@@ -34,7 +57,7 @@ def win_len(w: dict) -> int:
 
 def to_spans(windows: list[dict]) -> list[list[int]]:
     spans: list[list[int]] = []
-    for w in windows:
+    for w in intervals_of(windows):
         if win_len(w) >= 1440:
             return [[0, 1440]]
         if w["e"] > w["s"]:
@@ -81,17 +104,38 @@ def build_engine(model: dict) -> dict:
     wall clock; this automation only reacts to their edges, to a restart, to a device
     coming back from unavailable, and to the apply event.
     """
-    rules = [
+    live = [
         r
         for r in model.get("rules", [])
-        if r.get("enabled", True) is not False and r.get("schedule") and r.get("targets")
+        if r.get("enabled", True) is not False and r.get("targets")
     ]
+    # Two kinds of rule: state rules follow a schedule helper continuously; edge rules
+    # only fire at the times they name.
+    rules = [r for r in live if r.get("schedule") and not has_edges(r.get("windows"))]
     m: dict[str, str] = {}      # target entity -> schedule entity
     s2t: dict[str, list[str]] = {}  # schedule entity -> [target entities]
     for r in rules:
         s2t[r["schedule"]] = list(r["targets"])
         for t in r["targets"]:
             m[t] = r["schedule"]
+
+    # "HH:MM:00" -> {"on": [entities], "off": [entities]}. Sorted and de-duplicated so
+    # the generated automation is byte-identical whichever side wrote it.
+    edges: dict[str, dict[str, list[str]]] = {}
+    for r in (x for x in live if has_edges(x.get("windows"))):
+        for w in r.get("windows") or []:
+            for side, action in (("s", "on"), ("e", "off")):
+                if w.get(side) is None:
+                    continue
+                slot = edges.setdefault(_clock(w[side]), {}).setdefault(action, [])
+                for t in r["targets"]:
+                    if t not in slot:
+                        slot.append(t)
+    edge_times = sorted(edges)
+    e = {
+        at: {action: sorted(edges[at][action]) for action in ("on", "off") if action in edges[at]}
+        for at in edge_times
+    }
 
     triggers: list[dict] = [
         {"trigger": "homeassistant", "event": "start", "id": "boot"},
@@ -121,6 +165,9 @@ def build_engine(model: dict) -> dict:
                 "id": "revive",
             }
         )
+    # Edges are wall-clock moments, so they are plain time triggers.
+    if edge_times:
+        triggers.append({"trigger": "time", "at": edge_times, "id": "edge"})
 
     return {
         "id": ENGINE_ID,
@@ -128,7 +175,7 @@ def build_engine(model: dict) -> dict:
         "description": ENGINE_DESCRIPTION,
         "mode": "parallel",
         "max": 60,
-        "variables": {"tsvk_m": m, "tsvk_s2t": s2t, "tsvk_cfg": model},
+        "variables": {"tsvk_m": m, "tsvk_s2t": s2t, "tsvk_e": e, "tsvk_cfg": model},
         "triggers": triggers,
         "conditions": [],
         "actions": [
@@ -136,6 +183,7 @@ def build_engine(model: dict) -> dict:
                 "variables": {
                     "tsvk_todo": "{% if trigger.id == 'sched' %}{{ tsvk_s2t.get(trigger.entity_id, []) }}"
                     "{% elif trigger.id == 'revive' %}{{ [trigger.entity_id] }}"
+                    "{% elif trigger.id == 'edge' %}{{ [] }}"
                     "{% else %}{{ tsvk_m.keys() | list }}{% endif %}"
                 }
             },
@@ -171,6 +219,32 @@ def build_engine(model: dict) -> dict:
                         },
                     ],
                 }
+            },
+            {
+                # Edge rules say nothing about the state in between, so this is a plain
+                # switch at the moment that fired — no comparison, nothing to restore.
+                "if": [{"condition": "template", "value_template": "{{ trigger.id == 'edge' }}"}],
+                "then": [
+                    {"variables": {"tsvk_at": "{{ trigger.now.strftime('%H:%M:00') }}"}},
+                    {
+                        "variables": {
+                            "tsvk_on": "{{ tsvk_e.get(tsvk_at, {}).get('on', []) }}",
+                            "tsvk_off": "{{ tsvk_e.get(tsvk_at, {}).get('off', []) }}",
+                        }
+                    },
+                    {
+                        "if": [{"condition": "template", "value_template": "{{ tsvk_on | count > 0 }}"}],
+                        "then": [
+                            {"action": "homeassistant.turn_on", "target": {"entity_id": "{{ tsvk_on }}"}}
+                        ],
+                    },
+                    {
+                        "if": [{"condition": "template", "value_template": "{{ tsvk_off | count > 0 }}"}],
+                        "then": [
+                            {"action": "homeassistant.turn_off", "target": {"entity_id": "{{ tsvk_off }}"}}
+                        ],
+                    },
+                ],
             },
         ],
     }

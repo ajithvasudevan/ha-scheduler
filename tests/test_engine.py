@@ -100,6 +100,85 @@ MODEL = {
 }
 
 
+ONE_WAY_MODEL = {
+    "v": 1,
+    "rules": [
+        {
+            "id": "r1",
+            "name": "Off at bedtime only",
+            "schedule": None,
+            "targets": ["switch.gate", "light.porch"],
+            "windows": [{"s": None, "e": 1320}],
+            "enabled": True,
+        },
+        {
+            "id": "r2",
+            "name": "On at dawn only",
+            "schedule": None,
+            "targets": ["switch.gate"],
+            "windows": [{"s": 360, "e": None}],
+            "enabled": True,
+        },
+        {
+            "id": "r3",
+            "name": "Ordinary window",
+            "schedule": "schedule.s3",
+            "targets": ["switch.other"],
+            "windows": [{"s": 1200, "e": 300}],
+            "enabled": True,
+        },
+    ],
+}
+
+
+class OneWayEntries(unittest.TestCase):
+    """A window with one side unset acts only at that moment."""
+
+    def test_edges_become_time_triggers(self):
+        built = engine.build_engine(ONE_WAY_MODEL)
+        by_id = {t["id"]: t for t in built["triggers"]}
+        self.assertEqual(by_id["edge"]["at"], ["06:00:00", "22:00:00"])
+        self.assertEqual(by_id["edge"]["trigger"], "time")
+
+    def test_edge_map_is_sorted_and_deduplicated(self):
+        self.assertEqual(
+            engine.build_engine(ONE_WAY_MODEL)["variables"]["tsvk_e"],
+            {
+                "06:00:00": {"on": ["switch.gate"]},
+                "22:00:00": {"off": ["light.porch", "switch.gate"]},
+            },
+        )
+
+    def test_one_way_targets_are_never_state_matched(self):
+        built = engine.build_engine(ONE_WAY_MODEL)
+        # Only the ordinary rule may appear in the map the sweeps walk, or a boot would
+        # force a device that this rule says nothing about.
+        self.assertEqual(built["variables"]["tsvk_m"], {"switch.other": "schedule.s3"})
+        revive = next(t for t in built["triggers"] if t["id"] == "revive")
+        self.assertEqual(revive["entity_id"], ["switch.other"])
+
+    def test_a_rule_mixing_both_is_all_edges(self):
+        model = {"rules": [dict(ONE_WAY_MODEL["rules"][0], windows=[{"s": None, "e": 1320}, {"s": 60, "e": 120}])]}
+        built = engine.build_engine(model)
+        self.assertEqual(built["variables"]["tsvk_m"], {})
+        self.assertEqual(
+            sorted(built["variables"]["tsvk_e"]), ["01:00:00", "02:00:00", "22:00:00"]
+        )
+
+    def test_edges_are_left_out_of_the_helper_blocks(self):
+        self.assertEqual(engine.windows_to_blocks([{"s": None, "e": 1320}]), [])
+        self.assertEqual(
+            engine.windows_to_blocks([{"s": None, "e": 1320}, {"s": 60, "e": 120}]),
+            [{"from": "01:00:00", "to": "02:00:00"}],
+        )
+
+    def test_disabled_one_way_rule_fires_nothing(self):
+        model = {"rules": [dict(ONE_WAY_MODEL["rules"][0], enabled=False)]}
+        built = engine.build_engine(model)
+        self.assertEqual(built["variables"]["tsvk_e"], {})
+        self.assertNotIn("edge", {t["id"] for t in built["triggers"]})
+
+
 class BuildEngine(unittest.TestCase):
     def test_disabled_rules_are_left_out(self):
         built = engine.build_engine(MODEL)
@@ -121,7 +200,7 @@ class ParityWithThePanel(unittest.TestCase):
     def test_javascript_builds_the_same_automation(self):
         if shutil.which("node") is None:
             self.skipTest("node is not installed")
-        for model in (MODEL, {"v": 1, "rules": []}):
+        for model in (MODEL, ONE_WAY_MODEL, {"v": 1, "rules": []}):
             result = subprocess.run(
                 ["node", str(Path(__file__).parent / "parity.mjs")],
                 input=json.dumps(model),
