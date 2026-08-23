@@ -3,8 +3,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-const panel = path.join(import.meta.dirname, '..', 'custom_components', 'tsvk_scheduler',
-                        'frontend', 'tsvk-scheduler-panel.js');
+const panel = path.join(import.meta.dirname, '..', 'custom_components', 'ha_scheduler',
+                        'frontend', 'ha-scheduler-panel.js');
 const src = fs.readFileSync(panel, 'utf8');
 
 // The file registers a custom element on load; stub just enough for that to succeed.

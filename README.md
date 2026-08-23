@@ -22,18 +22,18 @@ no Lovelace resource to add, no dashboard to build.
 
 1. HACS → ⋮ → **Custom repositories**.
 2. Repository: this repository's URL. Type: **Integration**. Add.
-3. Install **Schedules (TSVK Scheduler)**, then restart Home Assistant.
+3. Install **Schedules (HA Scheduler)**, then restart Home Assistant.
 4. Settings → Devices & services → **Add integration** → *Schedules*.
 
 ### Manually
 
-1. Copy `custom_components/tsvk_scheduler/` into your `config/custom_components/`.
+1. Copy `custom_components/ha_scheduler/` into your `config/custom_components/`.
 2. Restart Home Assistant.
 3. Settings → Devices & services → **Add integration** → *Schedules*.
 
 **Schedules** then appears in the sidebar. Nothing else to configure.
 
-> Set up with `tsvk_scheduler:` in `configuration.yaml` before? That still works: the
+> Set up with `ha_scheduler:` in `configuration.yaml` before? That still works: the
 > key is imported into a config entry on the next start, and you can delete the line.
 
 ### Requirements
@@ -50,7 +50,7 @@ Three moving parts, all of them ordinary Home Assistant objects you can inspect:
 | Part | What it is | Where it lives |
 |---|---|---|
 | Timing | One `schedule.*` helper per rule | Settings → Devices & services → Helpers |
-| Mapping and switching | One generated automation, `automation.tsvk_scheduler_engine` | `automations.yaml` |
+| Mapping and switching | One generated automation, `automation.ha_scheduler_engine` | `automations.yaml` |
 | The rule set | The `variables:` block of that same automation | `automations.yaml` |
 
 **Why schedule helpers hold the timing.** Their state is a pure function of the wall
@@ -66,7 +66,7 @@ delete if you ever want the integration gone. It reacts to:
 * Home Assistant starting (after a 40 s grace period, so integrations can bring their
   entities up first),
 * a device returning from `unavailable` — a device or network outage ending,
-* the `tsvk_scheduler_apply` event, which is what **Restore now** fires.
+* the `ha_scheduler_apply` event, which is what **Restore now** fires.
 
 Between those moments nothing is re-asserted, which is deliberate: **a manual override
 lasts until the next scheduled change**. Flip a light on at 21:00 under a 22:00–05:00
@@ -91,7 +91,7 @@ Home Assistant's privileges rather than the caller's.
 So the panel writes through the services in this integration when the viewer is not an
 admin, and non-admins get the full editor. Reading is solved separately: the model lives
 in an automation, which non-admins cannot read, so every save also publishes a read-only
-copy to a hidden dashboard (`tsvk-schedules-data`) that they can.
+copy to a hidden dashboard (`schedules-data`) that they can.
 
 If you would rather non-admins only *look*, remove this integration's services from
 their reach with a Home Assistant permission policy, or set the panel to admins only in
@@ -106,7 +106,7 @@ Assistant. Targets are restricted to `switch`, `light`, `input_boolean`, `fan`, 
 **The system user.** The `schedule` integration keeps its storage collection in a local
 variable, unreachable from a custom component, so this integration drives Home
 Assistant's own API on `127.0.0.1` instead. It mints one admin *system* user named
-`TSVK Scheduler` on first use and stores its refresh token in `.storage`. Nothing leaves
+`HA Scheduler` on first use and stores its refresh token in `.storage`. Nothing leaves
 the machine, and no human user's token is ever read.
 
 ---
@@ -115,16 +115,16 @@ the machine, and no human user's token is ever read.
 
 | Service | What it does |
 |---|---|
-| `tsvk_scheduler.save_rule` | Create or update a rule (name, targets, windows, enabled). |
-| `tsvk_scheduler.delete_rule` | Remove a rule and its helper. Devices keep their current state. |
-| `tsvk_scheduler.set_enabled` | Pause or resume a rule without losing its times. |
-| `tsvk_scheduler.apply` | Re-assert every scheduled device to what its schedule says now. |
+| `ha_scheduler.save_rule` | Create or update a rule (name, targets, windows, enabled). |
+| `ha_scheduler.delete_rule` | Remove a rule and its helper. Devices keep their current state. |
+| `ha_scheduler.set_enabled` | Pause or resume a rule without losing its times. |
+| `ha_scheduler.apply` | Re-assert every scheduled device to what its schedule says now. |
 
 `apply` is worth a look on its own: call it from an automation after a power cut, a
 guest leaving, or any other "put everything back" moment.
 
 ```yaml
-action: tsvk_scheduler.apply
+action: ha_scheduler.apply
 ```
 
 ---
@@ -133,25 +133,22 @@ action: tsvk_scheduler.apply
 
 1. Settings → Devices & services → *Schedules* → delete the entry. The sidebar panel and
    the services go away; your rules do not.
-2. To remove the rules too: delete `automation.tsvk_scheduler_engine`, the
-   `schedule.*` helpers it names, and the hidden `tsvk-schedules-data` dashboard.
-3. Delete the `TSVK Scheduler` system user under Settings → People if you want it gone.
+2. To remove the rules too: delete `automation.ha_scheduler_engine`, the
+   `schedule.*` helpers it names, and the hidden `schedules-data` dashboard.
+3. Delete the `HA Scheduler` system user under Settings → People if you want it gone.
 
 ---
 
 ## Development
 
-`custom_components/tsvk_scheduler/frontend/tsvk-scheduler-panel.js` is a copy; the
-frontend is developed in `../panel` alongside its test suite. `./sync.sh` copies both in
-and runs everything.
+`custom_components/ha_scheduler/frontend/ha-scheduler-panel.js` is a copy; the frontend
+is developed in [ha-scheduler-panel](https://github.com/ajithvasudevan/ha-scheduler-panel),
+checked out next to this repository as `../panel`. `./sync.sh` copies the panel and its
+suite in, then runs everything.
 
 ```bash
 ./tests/run.sh     # compileall, node --check, the panel suite, the Python tests
 ```
-
-Before publishing, point `documentation` and `issue_tracker` in
-`custom_components/tsvk_scheduler/manifest.json` at wherever this repository actually
-lives — they currently hold placeholder URLs — and add yourself to `codeowners`.
 
 `tests/test_engine.py` includes a **parity** check: it runs the panel's `buildEngine()`
 under Node and asserts it produces the same automation as `engine.py`. Both sides write

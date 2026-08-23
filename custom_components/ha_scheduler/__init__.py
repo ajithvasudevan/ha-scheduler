@@ -50,7 +50,7 @@ from .scheduler import Scheduler
 
 _LOGGER = logging.getLogger(__name__)
 
-# `tsvk_scheduler:` with nothing under it parses as None, which a plain dict schema
+# `ha_scheduler:` with nothing under it parses as None, which a plain dict schema
 # rejects; this helper is what Home Assistant provides for a key that takes no options.
 CONFIG_SCHEMA = cv.empty_config_schema(DOMAIN)
 
@@ -105,7 +105,7 @@ ENABLED_SCHEMA = RULE_ID_SCHEMA.extend({vol.Required("enabled"): cv.boolean})
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """Accept `tsvk_scheduler:` in configuration.yaml by importing it once.
+    """Accept `ha_scheduler:` in configuration.yaml by importing it once.
 
     Everything real happens in async_setup_entry; the YAML key exists so instances set
     up before the config flow keep working after an upgrade.

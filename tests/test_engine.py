@@ -13,11 +13,11 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-COMPONENT = ROOT / "custom_components" / "tsvk_scheduler"
+COMPONENT = ROOT / "custom_components" / "ha_scheduler"
 
 # engine.py uses relative imports, so give it a parent package without running the real
 # __init__.py — that one imports Home Assistant, which is not installed here.
-_PKG = "tsvk_scheduler_under_test"
+_PKG = "ha_scheduler_under_test"
 _pkg = types.ModuleType(_PKG)
 _pkg.__path__ = [str(COMPONENT)]
 sys.modules[_PKG] = _pkg
@@ -142,7 +142,7 @@ class OneWayEntries(unittest.TestCase):
 
     def test_edge_map_is_sorted_and_deduplicated(self):
         self.assertEqual(
-            engine.build_engine(ONE_WAY_MODEL)["variables"]["tsvk_e"],
+            engine.build_engine(ONE_WAY_MODEL)["variables"]["hs_e"],
             {
                 "06:00:00": {"on": ["switch.gate"]},
                 "22:00:00": {"off": ["light.porch", "switch.gate"]},
@@ -153,16 +153,16 @@ class OneWayEntries(unittest.TestCase):
         built = engine.build_engine(ONE_WAY_MODEL)
         # Only the ordinary rule may appear in the map the sweeps walk, or a boot would
         # force a device that this rule says nothing about.
-        self.assertEqual(built["variables"]["tsvk_m"], {"switch.other": "schedule.s3"})
+        self.assertEqual(built["variables"]["hs_m"], {"switch.other": "schedule.s3"})
         revive = next(t for t in built["triggers"] if t["id"] == "revive")
         self.assertEqual(revive["entity_id"], ["switch.other"])
 
     def test_a_rule_mixing_both_is_all_edges(self):
         model = {"rules": [dict(ONE_WAY_MODEL["rules"][0], windows=[{"s": None, "e": 1320}, {"s": 60, "e": 120}])]}
         built = engine.build_engine(model)
-        self.assertEqual(built["variables"]["tsvk_m"], {})
+        self.assertEqual(built["variables"]["hs_m"], {})
         self.assertEqual(
-            sorted(built["variables"]["tsvk_e"]), ["01:00:00", "02:00:00", "22:00:00"]
+            sorted(built["variables"]["hs_e"]), ["01:00:00", "02:00:00", "22:00:00"]
         )
 
     def test_edges_are_left_out_of_the_helper_blocks(self):
@@ -175,18 +175,18 @@ class OneWayEntries(unittest.TestCase):
     def test_disabled_one_way_rule_fires_nothing(self):
         model = {"rules": [dict(ONE_WAY_MODEL["rules"][0], enabled=False)]}
         built = engine.build_engine(model)
-        self.assertEqual(built["variables"]["tsvk_e"], {})
+        self.assertEqual(built["variables"]["hs_e"], {})
         self.assertNotIn("edge", {t["id"] for t in built["triggers"]})
 
 
 class BuildEngine(unittest.TestCase):
     def test_disabled_rules_are_left_out(self):
         built = engine.build_engine(MODEL)
-        self.assertNotIn("switch.other", built["variables"]["tsvk_m"])
-        self.assertEqual(built["variables"]["tsvk_m"]["switch.gate"], "schedule.s1")
+        self.assertNotIn("switch.other", built["variables"]["hs_m"])
+        self.assertEqual(built["variables"]["hs_m"]["switch.gate"], "schedule.s1")
 
     def test_whole_model_is_carried_for_the_panel_to_read_back(self):
-        self.assertEqual(engine.build_engine(MODEL)["variables"]["tsvk_cfg"], MODEL)
+        self.assertEqual(engine.build_engine(MODEL)["variables"]["hs_cfg"], MODEL)
 
     def test_empty_model_has_no_state_triggers(self):
         ids = {t["id"] for t in engine.build_engine({"rules": []})["triggers"]}

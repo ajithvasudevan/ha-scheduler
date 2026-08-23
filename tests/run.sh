@@ -9,7 +9,7 @@ cd "$(dirname "$0")/.."
 cleanup() { find custom_components tests -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true; }
 trap cleanup EXIT
 
-python3 -m compileall -q custom_components/tsvk_scheduler >/dev/null
-node --check custom_components/tsvk_scheduler/frontend/tsvk-scheduler-panel.js
+python3 -m compileall -q custom_components/ha_scheduler >/dev/null
+node --check custom_components/ha_scheduler/frontend/ha-scheduler-panel.js
 node tests/smoke.mjs | tail -1
 python3 -m unittest discover -s tests -q

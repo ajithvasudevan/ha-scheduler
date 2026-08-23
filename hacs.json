@@ -1,5 +1,5 @@
 {
-  "name": "Schedules (TSVK Scheduler)",
+  "name": "Schedules (HA Scheduler)",
   "homeassistant": "2024.7.0",
   "render_readme": true
 }

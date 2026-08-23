@@ -46,7 +46,7 @@ class Scheduler:
             cfg = await self.api.async_rest("GET", f"config/automation/config/{ENGINE_ID}")
         except RuntimeError:
             cfg = None
-        model = (cfg or {}).get("variables", {}).get("tsvk_cfg") or {"v": 1, "rules": []}
+        model = (cfg or {}).get("variables", {}).get("hs_cfg") or {"v": 1, "rules": []}
         if not isinstance(model.get("rules"), list):
             model["rules"] = []
         return model

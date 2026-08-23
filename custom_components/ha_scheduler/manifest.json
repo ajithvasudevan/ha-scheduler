@@ -1,7 +1,9 @@
 {
-  "domain": "tsvk_scheduler",
+  "domain": "ha_scheduler",
   "name": "Schedules",
-  "codeowners": [],
+  "codeowners": [
+    "@ajithvasudevan"
+  ],
   "config_flow": true,
   "dependencies": [
     "automation",
@@ -12,10 +14,10 @@
     "panel_custom",
     "schedule"
   ],
-  "documentation": "https://github.com/ajithvasudevan/ha-tsvk-scheduler",
+  "documentation": "https://github.com/ajithvasudevan/ha-scheduler",
   "integration_type": "service",
   "iot_class": "local_push",
-  "issue_tracker": "https://github.com/ajithvasudevan/ha-tsvk-scheduler/issues",
+  "issue_tracker": "https://github.com/ajithvasudevan/ha-scheduler/issues",
   "requirements": [],
-  "version": "1.1.0"
+  "version": "1.2.0"
 }

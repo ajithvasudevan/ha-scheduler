@@ -14,9 +14,9 @@ globalThis.window = { customCards: [] };
 globalThis.setInterval = ()=>0; globalThis.clearInterval = ()=>{};
 globalThis.setTimeout = (f)=>0; globalThis.clearTimeout = ()=>{};
 
-const src = await import('node:fs').then(fs=>fs.readFileSync(new URL('../custom_components/tsvk_scheduler/frontend/tsvk-scheduler-panel.js', import.meta.url),'utf8'));
+const src = await import('node:fs').then(fs=>fs.readFileSync(new URL('../custom_components/ha_scheduler/frontend/ha-scheduler-panel.js', import.meta.url),'utf8'));
 new Function(src)();
-const Cls = store['tsvk-scheduler-panel'];
+const Cls = store['ha-scheduler-panel'];
 
 // Pull the pure helpers out of the module scope so the span maths can be asserted
 // without going through the DOM.
@@ -35,7 +35,7 @@ const hass = {
     'switch.dead':       {state:'unavailable', attributes:{friendly_name:'Dead Plug'}},
     'input_boolean.a':   {state:'off', attributes:{friendly_name:'Sound Power'}},
     'light.bulb':        {state:'on',  attributes:{friendly_name:'zigbee bulb'}},
-    'automation.tsvk_scheduler_engine': {state:'on', attributes:{}},
+    'automation.ha_scheduler_engine': {state:'on', attributes:{}},
     'schedule.r1':       {state:'on',  attributes:{next_event:nowISO}},
     'schedule.r2':       {state:'off', attributes:{next_event:null}},
   },
@@ -110,7 +110,7 @@ const dlg = p.shadowRoot.innerHTML;
 run('dialog save disabled when incomplete', ()=>{ if(!dlg.includes("data-act='save' disabled")) throw new Error('save not disabled'); });
 run('dialog shows next-day marker', ()=>{ if(!dlg.includes('next day')) throw new Error('no wrap marker'); });
 run('picker groups by area', ()=>{ if(!dlg.includes('Porch') || !dlg.includes('No area')) throw new Error('no groups'); });
-run('engine automation excluded from picker', ()=>{ if(dlg.includes('tsvk_scheduler_engine')) throw new Error('engine listed'); });
+run('engine automation excluded from picker', ()=>{ if(dlg.includes('ha_scheduler_engine')) throw new Error('engine listed'); });
 run('time entry is 4 selects, no free text', ()=>{ const n=(dlg.match(/data-act='time'/g)||[]).length; if(n!==4) throw new Error('selects='+n); });
 
 run('minute select offers all 60 minutes', ()=>{
@@ -461,7 +461,7 @@ run('viewer: empty state has no create CTA', ()=>{
   if(!h.includes('has not set any up yet')) throw new Error('no viewer empty text');
   p._model=m;
 });
-// a non-admin WITH custom_components/tsvk_scheduler installed gets the full UI
+// a non-admin WITH custom_components/ha_scheduler installed gets the full UI
 run('service-backed editor: full controls, no read-only banner', ()=>{
   p._isAdmin=false; p._viaService=true; p._canEdit=true; p._render();
   const h=p.shadowRoot.innerHTML;
@@ -603,27 +603,27 @@ await arun('restore fires the apply event for an admin without the integration',
   const real=p._hass.callApi; p._hass.callApi=async(m,path)=>{ posted=m+' '+path; return {}; };
   await p._onClick('restore', {dataset:{}}, {});
   p._hass.callApi=real;
-  if(posted!=='POST events/tsvk_scheduler_apply') throw new Error('posted='+posted);
+  if(posted!=='POST events/ha_scheduler_apply') throw new Error('posted='+posted);
   if(!/Restoring 1 device to its schedule/.test(p._toast)) throw new Error('toast='+p._toast);
 });
 await arun('restore prefers the service when the integration is installed', async ()=>{
-  p._hass.services={tsvk_scheduler:{apply:{}}};
+  p._hass.services={ha_scheduler:{apply:{}}};
   let called=null, posted=false;
   const rs=p._hass.callService, ra=p._hass.callApi;
   p._hass.callService=async(d,sv)=>{ called=d+'.'+sv; };
   p._hass.callApi=async()=>{ posted=true; return {}; };
   await p._onClick('restore', {dataset:{}}, {});
   p._hass.callService=rs; p._hass.callApi=ra; delete p._hass.services;
-  if(called!=='tsvk_scheduler.apply') throw new Error('called='+called);
+  if(called!=='ha_scheduler.apply') throw new Error('called='+called);
   if(posted) throw new Error('fell back to the event API with the service available');
 });
 await arun('restore refuses while the engine is off', async ()=>{
-  const st=p._hass.states['automation.tsvk_scheduler_engine'].state;
-  p._hass.states['automation.tsvk_scheduler_engine'].state='off';
+  const st=p._hass.states['automation.ha_scheduler_engine'].state;
+  p._hass.states['automation.ha_scheduler_engine'].state='off';
   let touched=false;
   const ra=p._hass.callApi; p._hass.callApi=async()=>{ touched=true; return {}; };
   await p._onClick('restore', {dataset:{}}, {});
-  p._hass.callApi=ra; p._hass.states['automation.tsvk_scheduler_engine'].state=st;
+  p._hass.callApi=ra; p._hass.states['automation.ha_scheduler_engine'].state=st;
   if(touched) throw new Error('fired the sweep with the engine off');
   if(!/engine is turned off/.test(p._toast)) throw new Error('toast='+p._toast);
 });
@@ -645,7 +645,7 @@ await arun('viewer without the integration cannot fire it', async ()=>{
   if(touched) throw new Error('viewer fired the sweep');
 });
 run('service-backed viewer does get the button', ()=>{
-  p._hass.services={tsvk_scheduler:{apply:{}}};
+  p._hass.services={ha_scheduler:{apply:{}}};
   p._isAdmin=false; p._viaService=true; p._canEdit=true; p._render();
   const ok=p.shadowRoot.innerHTML.includes("data-act='restore'");
   delete p._hass.services;
@@ -664,7 +664,7 @@ run('the override footnote points at the button', ()=>{
 });
 
 run('setConfig keeps the card config', ()=>{
-  p.setConfig({type:'custom:tsvk-scheduler-panel', model:{v:1,rules:[{id:'z'}]}});
+  p.setConfig({type:'custom:ha-scheduler-panel', model:{v:1,rules:[{id:'z'}]}});
   if(!p._cardConfig.model) throw new Error('config dropped');
   p.setConfig({});
 });

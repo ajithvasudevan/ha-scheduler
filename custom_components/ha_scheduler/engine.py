@@ -175,16 +175,16 @@ def build_engine(model: dict) -> dict:
         "description": ENGINE_DESCRIPTION,
         "mode": "parallel",
         "max": 60,
-        "variables": {"tsvk_m": m, "tsvk_s2t": s2t, "tsvk_e": e, "tsvk_cfg": model},
+        "variables": {"hs_m": m, "hs_s2t": s2t, "hs_e": e, "hs_cfg": model},
         "triggers": triggers,
         "conditions": [],
         "actions": [
             {
                 "variables": {
-                    "tsvk_todo": "{% if trigger.id == 'sched' %}{{ tsvk_s2t.get(trigger.entity_id, []) }}"
+                    "hs_todo": "{% if trigger.id == 'sched' %}{{ hs_s2t.get(trigger.entity_id, []) }}"
                     "{% elif trigger.id == 'revive' %}{{ [trigger.entity_id] }}"
                     "{% elif trigger.id == 'edge' %}{{ [] }}"
-                    "{% else %}{{ tsvk_m.keys() | list }}{% endif %}"
+                    "{% else %}{{ hs_m.keys() | list }}{% endif %}"
                 }
             },
             # Give integrations time to bring their entities up before the boot sweep.
@@ -194,25 +194,25 @@ def build_engine(model: dict) -> dict:
             },
             {
                 "repeat": {
-                    "for_each": "{{ tsvk_todo }}",
+                    "for_each": "{{ hs_todo }}",
                     "sequence": [
                         {
                             "variables": {
-                                "tsvk_w": "{{ states(tsvk_m[repeat.item]) if repeat.item in tsvk_m else 'skip' }}",
-                                "tsvk_cur": "{{ states(repeat.item) }}",
+                                "hs_w": "{{ states(hs_m[repeat.item]) if repeat.item in hs_m else 'skip' }}",
+                                "hs_cur": "{{ states(repeat.item) }}",
                             }
                         },
                         {
                             "if": [
                                 {
                                     "condition": "template",
-                                    "value_template": "{{ tsvk_w in ['on','off'] and tsvk_cur not in "
-                                    "['unavailable','unknown','none',''] and tsvk_cur != tsvk_w }}",
+                                    "value_template": "{{ hs_w in ['on','off'] and hs_cur not in "
+                                    "['unavailable','unknown','none',''] and hs_cur != hs_w }}",
                                 }
                             ],
                             "then": [
                                 {
-                                    "action": "homeassistant.turn_{{ tsvk_w }}",
+                                    "action": "homeassistant.turn_{{ hs_w }}",
                                     "target": {"entity_id": "{{ repeat.item }}"},
                                 }
                             ],
@@ -225,23 +225,23 @@ def build_engine(model: dict) -> dict:
                 # switch at the moment that fired — no comparison, nothing to restore.
                 "if": [{"condition": "template", "value_template": "{{ trigger.id == 'edge' }}"}],
                 "then": [
-                    {"variables": {"tsvk_at": "{{ trigger.now.strftime('%H:%M:00') }}"}},
+                    {"variables": {"hs_at": "{{ trigger.now.strftime('%H:%M:00') }}"}},
                     {
                         "variables": {
-                            "tsvk_on": "{{ tsvk_e.get(tsvk_at, {}).get('on', []) }}",
-                            "tsvk_off": "{{ tsvk_e.get(tsvk_at, {}).get('off', []) }}",
+                            "hs_on": "{{ hs_e.get(hs_at, {}).get('on', []) }}",
+                            "hs_off": "{{ hs_e.get(hs_at, {}).get('off', []) }}",
                         }
                     },
                     {
-                        "if": [{"condition": "template", "value_template": "{{ tsvk_on | count > 0 }}"}],
+                        "if": [{"condition": "template", "value_template": "{{ hs_on | count > 0 }}"}],
                         "then": [
-                            {"action": "homeassistant.turn_on", "target": {"entity_id": "{{ tsvk_on }}"}}
+                            {"action": "homeassistant.turn_on", "target": {"entity_id": "{{ hs_on }}"}}
                         ],
                     },
                     {
-                        "if": [{"condition": "template", "value_template": "{{ tsvk_off | count > 0 }}"}],
+                        "if": [{"condition": "template", "value_template": "{{ hs_off | count > 0 }}"}],
                         "then": [
-                            {"action": "homeassistant.turn_off", "target": {"entity_id": "{{ tsvk_off }}"}}
+                            {"action": "homeassistant.turn_off", "target": {"entity_id": "{{ hs_off }}"}}
                         ],
                     },
                 ],
