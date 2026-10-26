@@ -141,7 +141,10 @@ def days_payload(windows: list[dict], days: list | None = None) -> dict:
         else:
             for d in active:
                 per[d].append([w["s"], 1440])
-                per[(d + 1) % 7].append([0, w["e"]])
+                # A window ending exactly at midnight (e == 0) does not spill into the
+                # next day; only a true wrap (e > 0) contributes an after-midnight tail.
+                if w["e"] > 0:
+                    per[(d + 1) % 7].append([0, w["e"]])
     return {
         DAYS[d]: [
             {

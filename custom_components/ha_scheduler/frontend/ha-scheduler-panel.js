@@ -272,7 +272,9 @@ function daysBlocks(windows, days) {
   for (const w of intervalsOf(windows)) {
     if (winLength(w) >= 1440) { for (const d of active) per[d].push([0, 1440]); continue; }
     if (w.e > w.s) { for (const d of active) per[d].push([w.s, w.e]); }
-    else { for (const d of active) { per[d].push([w.s, 1440]); per[(d + 1) % 7].push([0, w.e]); } }
+    // e === 0 ends exactly at midnight and does not spill into the next day; only a
+    // true wrap (e > 0) contributes an after-midnight tail.
+    else { for (const d of active) { per[d].push([w.s, 1440]); if (w.e > 0) per[(d + 1) % 7].push([0, w.e]); } }
   }
   const out = {};
   for (let d = 0; d < 7; d++) {
@@ -2049,5 +2051,5 @@ window.customCards.push({
   description: "Full-screen daily on/off scheduling for any switchable entity.",
 });
 
-console.info("%c HA-SCHEDULER %c v1.4 ", "background:#03a9f4;color:#fff;border-radius:3px 0 0 3px",
+console.info("%c HA-SCHEDULER %c v1.4.1 ", "background:#03a9f4;color:#fff;border-radius:3px 0 0 3px",
   "background:#555;color:#fff;border-radius:0 3px 3px 0");
