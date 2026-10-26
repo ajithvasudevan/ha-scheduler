@@ -11,6 +11,7 @@ A Home Assistant custom integration that adds a full-screen **Schedules** panel 
 - **Solar windows** — start or end at Sunrise/Sunset ± offset in minutes; tooltip shows the raw solar time on hover
 - **One-way (edge) rules** — "turn on only" or "turn off only" at a specific time
 - **All-day rules** — device stays on all day
+- **Specific weekdays** — restrict any rule (fixed-time *or* solar) to chosen days of the week; the toggle off means every day
 - **Pause/resume** — disable a rule without losing its times
 - **Boot restore** — all rule types (fixed, solar) assert correct state 45 s after HA restart
 - **Non-admin support** — read-only panel for non-admins; write via `ha_scheduler.*` services
@@ -69,7 +70,8 @@ After setup, **Schedules** appears in the HA sidebar. Click **+ New** to create 
 2. **Add time windows** — each window has a start and end time
    - Click the **☀** icon next to any time to switch it to Sunrise/Sunset ± minutes
    - Leave one side blank (`--`) for a one-way rule
-3. **Save** — the rule takes effect immediately
+3. **Specific weekdays** (optional) — turn on the toggle below the on-times to restrict the rule to chosen days; left off, it runs every day
+4. **Save** — the rule takes effect immediately
 
 ### Schedule types
 
