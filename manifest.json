@@ -1,0 +1,23 @@
+{
+  "domain": "ha_scheduler",
+  "name": "Schedules",
+  "codeowners": [
+    "@ajithvasudevan"
+  ],
+  "config_flow": true,
+  "dependencies": [
+    "automation",
+    "config",
+    "frontend",
+    "http",
+    "lovelace",
+    "panel_custom",
+    "schedule"
+  ],
+  "documentation": "https://github.com/ajithvasudevan/ha-scheduler",
+  "integration_type": "service",
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/ajithvasudevan/ha-scheduler/issues",
+  "requirements": [],
+  "version": "1.3.8"
+}

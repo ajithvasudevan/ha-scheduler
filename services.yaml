@@ -1,0 +1,92 @@
+save_rule:
+  name: Save schedule rule
+  description: >-
+    Create or update a schedule rule. Called by the Schedules panel for users who are
+    not administrators, since Home Assistant refuses them the schedule and automation
+    config APIs directly.
+  fields:
+    rule_id:
+      name: Rule ID
+      description: Existing rule to update. Omit to create a new one.
+      required: false
+      example: r3f9a1c04
+      selector:
+        text:
+    name:
+      name: Name
+      description: Label shown in the panel and used for the schedule helper.
+      required: true
+      example: Gate light overnight
+      selector:
+        text:
+    targets:
+      name: Devices
+      description: >-
+        Entities this rule switches. Limited to switch, light, input_boolean, fan,
+        siren, valve, humidifier and automation.
+      required: true
+      selector:
+        entity:
+          multiple: true
+          domain:
+            - switch
+            - light
+            - input_boolean
+            - fan
+            - siren
+            - valve
+            - humidifier
+            - automation
+    windows:
+      name: On windows
+      description: >-
+        List of {s, e} objects. Each side is a fixed time in minutes past midnight
+        (0-1439), null for one-way, or a solar dict {sun: "sunrise"|"sunset",
+        offset: <±minutes>}. e <= s wraps past midnight; {s: 0, e: 0} means all day.
+        Solar rules fire at sunrise/sunset and are not restored on HA restart.
+      required: true
+      example: "[{s: {sun: sunset, offset: -30}, e: 1380}]"
+      selector:
+        object:
+    enabled:
+      name: Enabled
+      description: Turn off to pause the rule without losing its times.
+      required: false
+      default: true
+      selector:
+        boolean:
+
+delete_rule:
+  name: Delete schedule rule
+  description: >-
+    Remove a rule and its schedule helper. Devices are left in whatever state they
+    are currently in.
+  fields:
+    rule_id:
+      name: Rule ID
+      required: true
+      example: r3f9a1c04
+      selector:
+        text:
+
+set_enabled:
+  name: Pause or resume a schedule rule
+  description: Enable or disable a rule without changing its times.
+  fields:
+    rule_id:
+      name: Rule ID
+      required: true
+      example: r3f9a1c04
+      selector:
+        text:
+    enabled:
+      name: Enabled
+      required: true
+      selector:
+        boolean:
+
+apply:
+  name: Apply schedules now
+  description: >-
+    Re-assert every scheduled device to whatever its schedule says it should be right
+    now. Same sweep the engine runs after a Home Assistant restart, without the delay.

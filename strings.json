@@ -1,0 +1,13 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Schedules",
+        "description": "Adds a Schedules panel to the sidebar for daily on/off scheduling. There is nothing to configure."
+      }
+    },
+    "abort": {
+      "already_configured": "Schedules is already set up."
+    }
+  }
+}
