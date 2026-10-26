@@ -9,8 +9,9 @@
  *  - The schedule -> target mapping lives in the `variables` block of a single
  *    generated automation (ENGINE_ID). That file is written by this panel and read
  *    back to rebuild the UI, so automations.yaml is the one persistent store.
- *  - Every rule is written to all seven weekdays identically; there is no
- *    day-of-week concept in the UI by design.
+ *  - A rule runs every day unless it is restricted to specific weekdays (the Specific
+ *    weekdays toggle). A rule with no `days` field runs every day, so schedules written
+ *    by an older version keep working unchanged.
  *
  * Editing anything below through the HA automation editor will be overwritten the
  * next time this panel saves.
@@ -246,6 +247,71 @@ function blocksToWindows(blocks) {
   return normalise(mergeSpans(spans).map((sp) => ({ s: sp[0], e: sp[1] >= 1440 ? 0 : sp[1] })));
 }
 
+/* --------------------------------------------------------------- weekdays */
+
+const DAY_ABBR = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+/** 7-char Mon..Sun mask: "1" on an active weekday. null / empty / all-seven all mean
+ *  every day and give "1111111" — so a rule from an older version (no `days` field)
+ *  behaves exactly as it always did. Mirrors daymask() in engine.py. */
+function daymask(days) {
+  const s = days ? new Set(days.map(Number)) : new Set();
+  if (!s.size || s.size >= 7) return "1111111";
+  let out = "";
+  for (let i = 0; i < 7; i++) out += s.has(i) ? "1" : "0";
+  return out;
+}
+
+/** windows + a weekday set -> the per-weekday block map a schedule helper stores.
+ *  A wrapping window puts its after-midnight tail on the following calendar day, so a
+ *  weekday-restricted wrapping window still spills into the next morning. Mirrors
+ *  days_payload() in engine.py; with days=null it reproduces the old every-day map. */
+function daysBlocks(windows, days) {
+  const active = daymask(days) === "1111111" ? [0, 1, 2, 3, 4, 5, 6] : days.map(Number);
+  const per = { 0: [], 1: [], 2: [], 3: [], 4: [], 5: [], 6: [] };
+  for (const w of intervalsOf(windows)) {
+    if (winLength(w) >= 1440) { for (const d of active) per[d].push([0, 1440]); continue; }
+    if (w.e > w.s) { for (const d of active) per[d].push([w.s, w.e]); }
+    else { for (const d of active) { per[d].push([w.s, 1440]); per[(d + 1) % 7].push([0, w.e]); } }
+  }
+  const out = {};
+  for (let d = 0; d < 7; d++) {
+    out[DAYS[d]] = mergeSpans(per[d]).map((sp) => ({
+      from: toHHMM(sp[0]) + ":00",
+      to: sp[1] >= 1440 ? "24:00:00" : toHHMM(sp[1]) + ":00",
+    }));
+  }
+  return out;
+}
+
+/** Short human label for a rule's weekday restriction, or "" for every day. */
+function daysLabel(days) {
+  if (!Array.isArray(days) || !days.length || days.length >= 7) return "";
+  const s = Array.from(new Set(days.map(Number))).sort((a, b) => a - b);
+  if (s.join() === "0,1,2,3,4") return "Weekdays";
+  if (s.join() === "5,6") return "Weekends";
+  return s.map((i) => DAY_ABBR[i]).join(", ");
+}
+
+/* ----------------------------------------------- timeline (midnight-centred) */
+
+// Midnight sits in the CENTRE of the bar (noon at both edges), so a minute-of-day is
+// shifted +12h before being turned into a percentage. Everything else stays in real
+// minutes; only drawing uses these.
+const VSHIFT = 720;
+const toVisualPct = (m) => (((m + VSHIFT) % 1440) / 14.4);
+
+/** A minute-space span [a,b) (0..1440, a<b) -> one or two visual [left,right) spans in
+ *  minutes. A span crossing the noon seam (the bar's two edges) splits into two. */
+function visualRects(a, b) {
+  if (b - a >= 1440) return [[0, 1440]];
+  const va = (a + VSHIFT) % 1440;
+  let vb = (b + VSHIFT) % 1440;
+  if (vb === 0) vb = 1440;   // a span ending exactly at noon sits at the right edge, not 0
+  if (va < vb) return [[va, vb]];
+  return [[va, 1440], [0, vb]];
+}
+
 /* ------------------------------------------------- engine automation builder */
 
 function _solarOffsetStr(offset) {
@@ -272,23 +338,27 @@ function buildEngine(model) {
     for (const t of r.targets) m[t] = r.schedule;
   }
 
-  // Fixed-time edge map (non-solar one-way rules + fixed sides of solar rules).
+  // Fixed-time edge map (non-solar one-way rules + fixed sides of solar rules). Each
+  // entry is [entity, weekday-mask] so the engine can skip an entity on a day its rule
+  // does not cover; an all-day rule's mask is "1111111", so it always fires.
   const edges = {};
-  const addEdge = (at, action, targets) => {
+  const addEdge = (at, action, targets, mask) => {
     const slot = (edges[at] = edges[at] || {});
     const list = (slot[action] = slot[action] || []);
-    for (const t of targets) if (list.indexOf(t) < 0) list.push(t);
+    for (const t of targets) if (!list.some((p) => p[0] === t)) list.push([t, mask]);
   };
   for (const r of nonSolarLive.filter((x) => hasEdges(x.windows))) {
+    const mask = daymask(r.days);
     for (const w of r.windows || []) {
-      if (w.s !== null && w.s !== undefined) addEdge(clock(w.s), "on", r.targets);
-      if (w.e !== null && w.e !== undefined) addEdge(clock(w.e), "off", r.targets);
+      if (w.s !== null && w.s !== undefined) addEdge(clock(w.s), "on", r.targets, mask);
+      if (w.e !== null && w.e !== undefined) addEdge(clock(w.e), "off", r.targets, mask);
     }
   }
 
-  // Solar edge map: tid -> { on: [...], off: [...] }
+  // Solar edge map: tid -> { on: [[entity, mask], ...], off: [...] }
   const solarEdges = {};  // tid -> { event, offset, on: [], off: [] }
   for (const r of solarLive) {
+    const mask = daymask(r.days);
     for (const w of r.windows || []) {
       for (const [side, action] of [["s", "on"], ["e", "off"]]) {
         const v = w[side];
@@ -298,27 +368,28 @@ function buildEngine(model) {
           const tid = _solarTid(v.sun, offset);
           if (!solarEdges[tid]) solarEdges[tid] = { event: v.sun, offset, on: [], off: [] };
           const list = solarEdges[tid][action];
-          for (const t of r.targets) if (list.indexOf(t) < 0) list.push(t);
+          for (const t of r.targets) if (!list.some((p) => p[0] === t)) list.push([t, mask]);
         } else {
           // Fixed side of a solar rule — plain time trigger.
-          addEdge(clock(v), action, r.targets);
+          addEdge(clock(v), action, r.targets, mask);
         }
       }
     }
   }
 
+  const byEnt = (a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0);
   const edgeTimes = Object.keys(edges).sort();
   const e = {};
   for (const at of edgeTimes) {
     const slot = {};
-    for (const action of ["on", "off"]) if (edges[at][action]) slot[action] = edges[at][action].slice().sort();
+    for (const action of ["on", "off"]) if (edges[at][action]) slot[action] = edges[at][action].slice().sort(byEnt);
     e[at] = slot;
   }
   // Strip event/offset before storing in automation variables.
   const hs_solar_e = {};
   for (const tid of Object.keys(solarEdges).sort()) {
     const d = solarEdges[tid];
-    hs_solar_e[tid] = { on: d.on.slice().sort(), off: d.off.slice().sort() };
+    hs_solar_e[tid] = { on: d.on.slice().sort(byEnt), off: d.off.slice().sort(byEnt) };
     if (!hs_solar_e[tid].on.length) delete hs_solar_e[tid].on;
     if (!hs_solar_e[tid].off.length) delete hs_solar_e[tid].off;
   }
@@ -393,8 +464,16 @@ function buildEngine(model) {
           { variables: { hs_at: "{{ trigger.now.strftime('%H:%M:00') }}" } },
           {
             variables: {
-              hs_on: "{{ hs_e.get(hs_at, {}).get('on', []) }}",
-              hs_off: "{{ hs_e.get(hs_at, {}).get('off', []) }}",
+              // Each entry is [entity, weekday-mask]; keep only those whose mask has today
+              // set. An all-day rule's mask is all 1s, so it always passes.
+              hs_on:
+                "{% set wd = now().weekday() %}{% set ns = namespace(l=[]) %}" +
+                "{% for p in hs_e.get(hs_at, {}).get('on', []) %}" +
+                "{% if p[1][wd] == '1' %}{% set ns.l = ns.l + [p[0]] %}{% endif %}{% endfor %}{{ ns.l }}",
+              hs_off:
+                "{% set wd = now().weekday() %}{% set ns = namespace(l=[]) %}" +
+                "{% for p in hs_e.get(hs_at, {}).get('off', []) %}" +
+                "{% if p[1][wd] == '1' %}{% set ns.l = ns.l + [p[0]] %}{% endif %}{% endfor %}{{ ns.l }}",
             },
           },
           {
@@ -414,8 +493,15 @@ function buildEngine(model) {
         then: [
           {
             variables: {
-              hs_solar_on: "{{ hs_solar_e.get(trigger.id, {}).get('on', []) }}",
-              hs_solar_off: "{{ hs_solar_e.get(trigger.id, {}).get('off', []) }}",
+              // Each entry is [entity, weekday-mask]; keep only today's.
+              hs_solar_on:
+                "{% set wd = now().weekday() %}{% set ns = namespace(l=[]) %}" +
+                "{% for p in hs_solar_e.get(trigger.id, {}).get('on', []) %}" +
+                "{% if p[1][wd] == '1' %}{% set ns.l = ns.l + [p[0]] %}{% endif %}{% endfor %}{{ ns.l }}",
+              hs_solar_off:
+                "{% set wd = now().weekday() %}{% set ns = namespace(l=[]) %}" +
+                "{% for p in hs_solar_e.get(trigger.id, {}).get('off', []) %}" +
+                "{% if p[1][wd] == '1' %}{% set ns.l = ns.l + [p[0]] %}{% endif %}{% endfor %}{{ ns.l }}",
             },
           },
           {
@@ -652,6 +738,28 @@ svg.i { width: 20px; height: 20px; fill: currentColor; display: block; }
 .solar-unit { font-size: 12px; color: var(--secondary-text-color); }
 .solar-mode-btn { color: var(--hs-on); width: 28px; height: 28px; }
 .solar-mode-btn svg { width: 16px; height: 16px; }
+/* Specific-weekdays row: the toggle plus, when it is on, the seven day chips — all on
+   one line below the on-times section. */
+.wdrow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 16px; }
+.wdlabel { font-size: 14px; }
+.hs-switch { position: relative; display: inline-block; width: 40px; height: 22px; flex: 0 0 auto; cursor: pointer; }
+.hs-switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+.hs-switch .sw { position: absolute; inset: 0; border-radius: 22px; background: var(--hs-track); transition: background .15s; }
+.hs-switch .sw::before {
+  content: ''; position: absolute; height: 16px; width: 16px; left: 3px; top: 3px;
+  border-radius: 50%; background: #fff; transition: transform .15s; box-shadow: 0 1px 2px rgba(0,0,0,.3);
+}
+.hs-switch input:checked + .sw { background: var(--hs-on); }
+.hs-switch input:checked + .sw::before { transform: translateX(18px); }
+.wdays { display: flex; gap: 6px; flex-wrap: wrap; }
+.daybox { position: relative; cursor: pointer; }
+.daybox input { position: absolute; opacity: 0; width: 0; height: 0; }
+.daybox span {
+  display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px;
+  border-radius: 50%; border: 1px solid var(--hs-track); font-size: 13px; font-weight: 600;
+  color: var(--secondary-text-color); user-select: none; transition: background .12s, color .12s, border-color .12s;
+}
+.daybox.sel span { background: var(--hs-on); color: #fff; border-color: var(--hs-on); }
 .tip {
   position: fixed; z-index: 60; pointer-events: none; white-space: pre-line;
   background: var(--primary-text-color); color: var(--primary-background-color);
@@ -852,6 +960,10 @@ class HaSchedulerPanel extends HTMLElement {
         const sid = (r.schedule || "").split(".")[1];
         const stored = this._schedules[sid];
         if (!stored) continue;
+        // A weekday-restricted rule's Monday blocks need not equal its full windows
+        // (Monday may be inactive, or hold only a wrap tail), so don't reconcile from
+        // them — the model's windows + days are the source of truth.
+        if (Array.isArray(r.days) && r.days.length && r.days.length < 7) continue;
         const authored = JSON.stringify(windowsToBlocks(r.windows || []));
         const held = JSON.stringify((stored.monday || []).map((b) => ({ from: b.from, to: b.to })));
         if (!r.windows || !r.windows.length || authored !== held) {
@@ -1134,7 +1246,7 @@ class HaSchedulerPanel extends HTMLElement {
       "<svg viewBox='0 0 24 24'><path d='" + ICON_CLOCK + "'/></svg>" +
       "<h2>No schedules yet</h2>" +
       (this._canEdit
-        ? "<p>Pick a device and give it on and off times.<br>They repeat every day and survive restarts.</p>" +
+        ? "<p>Pick a device and give it on and off times.<br>They repeat daily — or on chosen weekdays — and survive restarts.</p>" +
           "<button class='btn-primary' data-act='new'>Create the first schedule</button>"
         : "<p>An administrator has not set any up yet.</p>") + "</div>"
     );
@@ -1162,7 +1274,7 @@ class HaSchedulerPanel extends HTMLElement {
     // Ribbon: resolve solar sides to today's computed minutes for geometry.
     const resolved = this._resolveSolar(windows);
     const segs = this._ribbonSegs(resolved) + this._ribbonEdges(resolved);
-    const nowPct = ((now.getHours() * 60 + now.getMinutes()) / 14.4);
+    const nowPct = toVisualPct(now.getHours() * 60 + now.getMinutes());
 
     const chips = windows.length
       ? windows.map((w) => {
@@ -1229,6 +1341,8 @@ class HaSchedulerPanel extends HTMLElement {
     const sameText = (a, b) =>
       String(a || "").toLowerCase().replace(/\s+/g, "") === String(b || "").toLowerCase().replace(/\s+/g, "");
     const metaBits = [];
+    const dl = daysLabel(r.days);
+    if (dl) metaBits.push(dl);
     if (!names) metaBits.push("no devices");
     else if (!sameText(names, r.name)) metaBits.push(names);
     if (dead) metaBits.push(dead + " unavailable");
@@ -1250,7 +1364,7 @@ class HaSchedulerPanel extends HTMLElement {
             : "") +
         "</div>" +
         "<div class='ribbon'>" +
-          "<div class='ticks'><span>0</span><span>3</span><span>6</span><span>9</span><span>12</span><span>15</span><span>18</span><span>21</span><span>24</span></div>" +
+          "<div class='ticks'><span>12</span><span>15</span><span>18</span><span>21</span><span>0</span><span>3</span><span>6</span><span>9</span><span>12</span></div>" +
           "<div class='track'>" + segs + "<div class='now' style='left:" + nowPct + "%'></div></div>" +
         "</div>" +
         "<div class='chips'>" + chips + "</div>" +
@@ -1271,9 +1385,13 @@ class HaSchedulerPanel extends HTMLElement {
         return toHHMM(w.s) + " → " + toHHMM(w.e) + "  (" + dur(winLength(w)) + ")";
       });
       if (sg.depth > 1) lines.unshift(sg.depth + " overlapping entries:");
-      return "<div class='seg" + (sg.depth > 1 ? " d" + Math.min(sg.depth, 3) : "") +
-        "' data-tip='" + esc(lines.join("\n")) + "'" +
-        " style='left:" + (sg.a / 14.4) + "%;width:" + ((sg.b - sg.a) / 14.4) + "%'></div>";
+      const cls = "seg" + (sg.depth > 1 ? " d" + Math.min(sg.depth, 3) : "");
+      const tip = esc(lines.join("\n"));
+      // Midnight is the bar's centre, so a slice that crosses noon is drawn as its two
+      // halves, one against each edge.
+      return visualRects(sg.a, sg.b).map((r) =>
+        "<div class='" + cls + "' data-tip='" + tip + "'" +
+        " style='left:" + (r[0] / 14.4) + "%;width:" + ((r[1] - r[0]) / 14.4) + "%'></div>").join("");
     }).join("");
   }
 
@@ -1286,7 +1404,7 @@ class HaSchedulerPanel extends HTMLElement {
       if (!isEdge(w)) continue;
       const on = w.e === null || w.e === undefined;
       const at = on ? w.s : w.e;
-      const pct = at / 14.4;
+      const pct = toVisualPct(at);
       const width = 10;   // percent of the day, purely a visual hint
       const left = on ? pct : Math.max(0, pct - width);
       out.push("<div class='edge " + (on ? "on" : "off") + "' style='left:" + left + "%;width:" +
@@ -1393,8 +1511,10 @@ class HaSchedulerPanel extends HTMLElement {
     }).join("");
 
     const on = totalOnMinutes(intervalsOf(real));
+    // Specific-weekdays on with nothing ticked would mean "never", so block saving then.
+    const daysOk = !d.daysOn || (d.days && d.days.length > 0);
     const canSave = d.targets.length > 0 && real.length > 0 && pending === 0 &&
-                    d.name.trim().length > 0;
+                    d.name.trim().length > 0 && daysOk;
 
     return (
       "<div class='overlay' data-act='backdrop'><div class='dialog' data-stop='1'>" +
@@ -1404,13 +1524,14 @@ class HaSchedulerPanel extends HTMLElement {
 
         "<div class='section'>On times</div>" +
         "<div class='ribbon'>" +
-          "<div class='ticks'><span>0</span><span>3</span><span>6</span><span>9</span><span>12</span><span>15</span><span>18</span><span>21</span><span>24</span></div>" +
+          "<div class='ticks'><span>12</span><span>15</span><span>18</span><span>21</span><span>0</span><span>3</span><span>6</span><span>9</span><span>12</span></div>" +
           "<div class='track tall'>" + segs + "</div>" +
         "</div>" +
         rows +
         "<button class='btn-ghost' data-act='addwin' style='margin-top:8px" +
           (pending ? ";opacity:.4;cursor:not-allowed" : "") + "'" + (pending ? " disabled" : "") +
           ">+ Add another on/off time</button>" +
+        this._weekdayRow(d) +
         "<p class='hint'>" + (on ? "On for " + dur(on) + " a day (fixed windows only). " : "") +
           "An end time earlier than the start crosses midnight — that is allowed. " +
           "Click the ☀ icon next to any time to switch it to Sunrise or Sunset ± offset in minutes.</p>" +
@@ -1430,6 +1551,28 @@ class HaSchedulerPanel extends HTMLElement {
       confirmScrim +
       "</div></div>"
     );
+  }
+
+  /** The Specific-weekdays toggle and, when it is on, the seven day chips — one line
+   *  under the on-times section. Toggle off (the default) means the rule runs every day. */
+  _weekdayRow(d) {
+    const on = !!d.daysOn;
+    const sel = new Set((d.days || []).map(Number));
+    const toggle =
+      "<label class='hs-switch'><input type='checkbox' data-act='days-toggle'" + (on ? " checked" : "") +
+      "><span class='sw'></span></label>" +
+      "<span class='wdlabel'>Specific weekdays</span>";
+    let boxes = "";
+    if (on) {
+      boxes = "<div class='wdays'>" + DAY_ABBR.map((lab, i) =>
+        "<label class='daybox" + (sel.has(i) ? " sel" : "") + "' title='" + esc(lab) + "'>" +
+          "<input type='checkbox' data-act='day-check' data-day='" + i + "'" + (sel.has(i) ? " checked" : "") + ">" +
+          "<span>" + lab[0] + "</span></label>").join("") + "</div>";
+    }
+    const warn = on && sel.size === 0
+      ? "<p class='hint note'>Pick at least one weekday, or turn the toggle off for every day.</p>"
+      : "";
+    return "<div class='wdrow'>" + toggle + boxes + "</div>" + warn;
   }
 
   /** New-schedule only: the name field and the searchable multi-select device picker. */
@@ -1534,7 +1677,8 @@ class HaSchedulerPanel extends HTMLElement {
         el.addEventListener("input", (e) => this._onSolarOffset(el, e.target.value));
         // Re-render on blur/change so the row reflects the finalised value.
         el.addEventListener("change", () => this._render());
-      } else if (act === "time" || act === "pick" || act === "solar-event") {
+      } else if (act === "time" || act === "pick" || act === "solar-event" ||
+                 act === "days-toggle" || act === "day-check") {
         el.addEventListener("change", (e) => this._onChange(act, el, e));
       } else {
         el.addEventListener("click", (e) => this._onClick(act, el, e));
@@ -1569,7 +1713,8 @@ class HaSchedulerPanel extends HTMLElement {
     const d = this._dialog;
     const btn = this._root.querySelector("[data-act='save']");
     if (!btn) return;
-    const ok = d.targets.length > 0 && d.windows.length > 0 && d.name.trim().length > 0;
+    const daysOk = !d.daysOn || (d.days && d.days.length > 0);
+    const ok = d.targets.length > 0 && d.windows.length > 0 && d.name.trim().length > 0 && daysOk;
     btn.disabled = !ok;
     btn.style.opacity = ok ? "" : ".4";
     btn.style.cursor = ok ? "" : "not-allowed";
@@ -1578,6 +1723,24 @@ class HaSchedulerPanel extends HTMLElement {
   _onChange(act, el, ev) {
     const d = this._dialog;
     if (!d) return;
+    if (act === "days-toggle") {
+      d.daysOn = el.checked;
+      // First time it is switched on, start from every day ticked — the user then
+      // unticks the days they don't want. Toggle off is left meaning "every day".
+      if (d.daysOn && (!d.days || !d.days.length)) d.days = [0, 1, 2, 3, 4, 5, 6];
+      this._render();
+      return;
+    }
+    if (act === "day-check") {
+      const i = parseInt(el.dataset.day, 10);
+      d.days = d.days || [];
+      const at = d.days.indexOf(i);
+      if (el.checked && at < 0) d.days.push(i);
+      if (!el.checked && at >= 0) d.days.splice(at, 1);
+      d.days.sort((a, b) => a - b);
+      this._render();
+      return;
+    }
     if (act === "solar-event") {
       const i = parseInt(el.dataset.i, 10);
       const side = el.dataset.w;
@@ -1628,11 +1791,28 @@ class HaSchedulerPanel extends HTMLElement {
     }
   }
 
+  /** Everything the user can change, as a stable string — the baseline for the
+   *  unsaved-changes guard. Includes the weekday restriction. */
+  _snap(d) {
+    return JSON.stringify({
+      name: d.name, targets: d.targets, windows: d.windows,
+      daysOn: !!d.daysOn, days: (d.days || []).slice().sort((a, b) => a - b),
+    });
+  }
+
+  /** The weekday restriction to persist: an array of 0-6, or null for every day
+   *  (toggle off, or on with nothing / everything ticked). */
+  _dialogDays(d) {
+    if (!d.daysOn) return null;
+    const s = Array.from(new Set((d.days || []).map(Number))).filter((n) => n >= 0 && n <= 6).sort((a, b) => a - b);
+    if (!s.length || s.length >= 7) return null;
+    return s;
+  }
+
   _dialogDirty() {
     const d = this._dialog;
     if (!d || !d._orig) return false;
-    const cur = JSON.stringify({ name: d.name, targets: d.targets, windows: d.windows });
-    return cur !== d._orig;
+    return this._snap(d) !== d._orig;
   }
 
   _tryCancel() {
@@ -1649,20 +1829,30 @@ class HaSchedulerPanel extends HTMLElement {
       case "backdrop":
         return; // clicking outside the dialog does nothing; use Save or Cancel
       case "new": {
-        const init = { name: "", targets: [], windows: [{ s: 1200, e: 300 }] };
-        this._dialog = { id: "r" + Date.now().toString(36), isNew: true, q: "", ...init, _orig: JSON.stringify(init) };
+        const nd = {
+          id: "r" + Date.now().toString(36), isNew: true, q: "",
+          name: "", targets: [], windows: [{ s: 1200, e: 300 }],
+          daysOn: false, days: [0, 1, 2, 3, 4, 5, 6],
+        };
+        nd._orig = this._snap(nd);
+        this._dialog = nd;
         this._render();
         return;
       }
       case "edit": {
         const rule = this._model.rules.find((x) => x.id === el.dataset.id);
         if (!rule) return;
-        const init = {
+        const restricted = Array.isArray(rule.days) && rule.days.length > 0 && rule.days.length < 7;
+        const ed = {
+          id: rule.id, isNew: false, q: "",
           name: rule.name,
           targets: (rule.targets || []).slice(),
           windows: (rule.windows || []).map((w) => ({ s: w.s, e: w.e })),
+          daysOn: restricted,
+          days: restricted ? rule.days.slice().sort((a, b) => a - b) : [0, 1, 2, 3, 4, 5, 6],
         };
-        this._dialog = { id: rule.id, isNew: false, q: "", ...init, _orig: JSON.stringify(init) };
+        ed._orig = this._snap(ed);
+        this._dialog = ed;
         this._render();
         return;
       }
@@ -1750,9 +1940,8 @@ class HaSchedulerPanel extends HTMLElement {
     const d = this._dialog;
     const h = this._hass;
     const windows = d.windows.filter((w) => !w.draft);
-    const blocks = windowsToBlocks(windows);
-    const days = {};
-    for (const day of DAYS) days[day] = blocks;   // every day, by design
+    const daySet = this._dialogDays(d);          // array of 0-6, or null for every day
+    const days = daysBlocks(windows, daySet);    // per-weekday helper blocks
     // Rules with one-way (null) sides or any solar time cannot use a schedule helper.
     // Schedule helpers only understand fixed HH:MM times.
     const noHelper = hasEdges(windows) || hasSolarWindows(windows);
@@ -1766,6 +1955,7 @@ class HaSchedulerPanel extends HTMLElement {
         await h.callService(SVC, "save_rule", {
           rule_id: d.id, name: d.name.trim(), targets: d.targets.slice(),
           windows: windows.map((w) => ({ s: w.s, e: w.e })), enabled: rule ? rule.enabled !== false : true,
+          days: daySet,
         });
       } catch (e) {
         this._flash(this._writeError(e));
@@ -1807,6 +1997,9 @@ class HaSchedulerPanel extends HTMLElement {
     rule.name = d.name.trim();
     rule.targets = d.targets.slice();
     rule.windows = windows;
+    // Only keep `days` when actually restricted, so an every-day rule round-trips
+    // byte-identical to how older versions wrote it.
+    if (daySet) rule.days = daySet; else delete rule.days;
     // One device belongs to exactly one rule, so the engine map is never ambiguous.
     for (const other of this._model.rules) {
       if (other.id === rule.id) continue;
@@ -1856,5 +2049,5 @@ window.customCards.push({
   description: "Full-screen daily on/off scheduling for any switchable entity.",
 });
 
-console.info("%c HA-SCHEDULER %c v1.3 ", "background:#03a9f4;color:#fff;border-radius:3px 0 0 3px",
+console.info("%c HA-SCHEDULER %c v1.4 ", "background:#03a9f4;color:#fff;border-radius:3px 0 0 3px",
   "background:#555;color:#fff;border-radius:0 3px 3px 0");

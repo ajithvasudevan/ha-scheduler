@@ -31,7 +31,7 @@ from homeassistant.components import panel_custom
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry, SOURCE_IMPORT
 from homeassistant.const import EVENT_HOMEASSISTANT_START
-from homeassistant.core import HomeAssistant, SupportsResponse
+from homeassistant.core import HomeAssistant, SupportsResponse, callback
 from homeassistant.components import frontend
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType
@@ -102,6 +102,12 @@ SAVE_SCHEMA = vol.Schema(
         vol.Required("targets"): vol.All(cv.ensure_list, [_target], vol.Length(min=1, max=25)),
         vol.Required("windows"): vol.All(cv.ensure_list, [WINDOW_SCHEMA], vol.Length(min=1, max=24)),
         vol.Optional("enabled", default=True): cv.boolean,
+        # Weekday restriction, 0=Monday. Omitted / null / empty / all-seven = every day,
+        # so a caller written against an older version (which never sends it) is unaffected.
+        vol.Optional("days"): vol.Any(
+            None,
+            vol.All(cv.ensure_list, [vol.All(vol.Coerce(int), vol.Range(min=0, max=6))], vol.Length(max=7)),
+        ),
     }
 )
 
@@ -152,14 +158,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await asyncio.sleep(45)
         await scheduler.async_apply_all_solar_rules()
 
+    @callback
+    def _on_ha_start(_event) -> None:
+        # Run on the event loop (hence @callback) so async_create_task is called from the
+        # loop thread, not an executor — otherwise HA's frame helper flags it.
+        hass.async_create_task(_solar_boot_restore_task())
+
     if hass.is_running:
         # Integration was reloaded while HA is already up; apply immediately.
         hass.async_create_task(scheduler.async_apply_all_solar_rules())
     else:
-        hass.bus.async_listen_once(
-            EVENT_HOMEASSISTANT_START,
-            lambda _event: hass.async_create_task(_solar_boot_restore_task()),
-        )
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_START, _on_ha_start)
 
     return True
 

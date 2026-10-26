@@ -29,7 +29,7 @@ from .const import (
     MIRROR_PATH,
     MIRROR_TITLE,
 )
-from .engine import build_engine, days_payload, has_edges, has_solar, is_solar
+from .engine import build_engine, daymask, days_payload, has_edges, has_solar, is_solar
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -140,8 +140,10 @@ class Scheduler:
             return
 
         now_min = dt_util.now().hour * 60 + dt_util.now().minute
+        # A weekday-restricted rule asserts nothing (stays off) on a day it doesn't cover.
+        active_today = daymask(rule.get("days"))[dt_util.now().weekday()] == "1"
         should_be_on = False
-        for w in rule.get("windows") or []:
+        for w in (rule.get("windows") or []) if active_today else []:
             s = self._solar_side_minutes(w.get("s"))
             e = self._solar_side_minutes(w.get("e"))
             if s is None or e is None:
@@ -179,9 +181,15 @@ class Scheduler:
         targets = list(call.data["targets"])
         windows = [{"s": w["s"], "e": w["e"]} for w in call.data["windows"]]
         enabled = call.data["enabled"]
+        # Weekday restriction (0=Monday). None/empty/all-seven all mean every day, which
+        # is what a caller from the old integration (no `days` at all) sends.
+        raw_days = call.data.get("days")
+        day_list = sorted({int(d) for d in raw_days}) if raw_days else None
+        if day_list is not None and len(day_list) >= 7:
+            day_list = None
 
         rule = next((r for r in model["rules"] if r.get("id") == rule_id), None) if rule_id else None
-        days = days_payload(windows)
+        days = days_payload(windows, day_list)
         # Rules with one-way (null) sides or solar times cannot use a schedule helper:
         # schedule helpers only understand fixed HH:MM times. These rules fire only at
         # their named moments; state is not restored at boot.
@@ -241,6 +249,12 @@ class Scheduler:
         rule["targets"] = targets
         rule["windows"] = windows
         rule["enabled"] = enabled
+        # Only store `days` when the rule is actually restricted, so an every-day rule
+        # round-trips byte-identical to how older versions wrote it (no spurious diffs).
+        if day_list:
+            rule["days"] = day_list
+        else:
+            rule.pop("days", None)
         # One device belongs to exactly one rule, so the engine map is never ambiguous.
         for other in model["rules"]:
             if other is not rule:

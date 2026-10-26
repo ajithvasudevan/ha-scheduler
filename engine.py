@@ -19,6 +19,7 @@ from .const import (
 __all__ = [
     "ALLOWED_DOMAINS",
     "build_engine",
+    "daymask",
     "days_payload",
     "has_edges",
     "has_solar",
@@ -108,9 +109,49 @@ def windows_to_blocks(windows: list[dict]) -> list[dict]:
     ]
 
 
-def days_payload(windows: list[dict]) -> dict:
-    blocks = windows_to_blocks(windows)
-    return {d: blocks for d in DAYS}  # every day identical, by design
+def daymask(days: list | None) -> str:
+    """A 7-char Monday..Sunday mask: '1' on an active weekday, '0' otherwise. None, an
+    empty list, or all seven days all mean "every day" and give '1111111' — so a rule
+    saved by an older version of the integration (no `days` field at all) behaves
+    exactly as it always did."""
+    s = {int(d) for d in days} if days else set()
+    if not s or len(s) >= 7:
+        return "1111111"
+    return "".join("1" if i in s else "0" for i in range(7))
+
+
+def days_payload(windows: list[dict], days: list | None = None) -> dict:
+    """windows -> the per-weekday block map a schedule helper stores.
+
+    `days` restricts the rule to a set of weekdays (0=Monday). None/empty/all-seven is
+    every day and reproduces the old behaviour exactly. A window that wraps past
+    midnight contributes its after-midnight tail to the following calendar day, so a
+    weekday-restricted wrapping window still spills into the next morning as authored.
+    """
+    active = set(range(7)) if daymask(days) == "1111111" else {int(d) for d in days}
+    per: dict[int, list[list[int]]] = {d: [] for d in range(7)}
+    for w in intervals_of(windows):
+        if win_len(w) >= 1440:
+            for d in active:
+                per[d].append([0, 1440])
+            continue
+        if w["e"] > w["s"]:
+            for d in active:
+                per[d].append([w["s"], w["e"]])
+        else:
+            for d in active:
+                per[d].append([w["s"], 1440])
+                per[(d + 1) % 7].append([0, w["e"]])
+    return {
+        DAYS[d]: [
+            {
+                "from": "%02d:%02d:00" % (sp[0] // 60, sp[0] % 60),
+                "to": "24:00:00" if sp[1] >= 1440 else "%02d:%02d:00" % (sp[1] // 60, sp[1] % 60),
+            }
+            for sp in merge_spans(per[d])
+        ]
+        for d in range(7)
+    }
 
 
 def _solar_offset_str(offset: int) -> str:
@@ -153,26 +194,33 @@ def build_engine(model: dict) -> dict:
         for t in r["targets"]:
             m[t] = r["schedule"]
 
-    # Fixed-time edge map: "HH:MM:00" -> {"on": [...], "off": [...]}
+    # Fixed-time edge map: "HH:MM:00" -> {"on": [[entity, mask], ...], "off": [...]}
     # Populated from non-solar one-way rules AND from the fixed sides of solar rules.
-    edges: dict[str, dict[str, list[str]]] = {}
+    # Each entity carries its rule's 7-char weekday mask so the engine can skip it on a
+    # day the rule does not cover (an all-day rule's mask is "1111111", so it never does).
+    edges: dict[str, dict[str, list[list[str]]]] = {}
+
+    def _add_edge(at: str, action: str, targets: list[str], mask: str) -> None:
+        slot = edges.setdefault(at, {}).setdefault(action, [])
+        for t in targets:
+            if not any(p[0] == t for p in slot):
+                slot.append([t, mask])
 
     for r in non_solar_live:
         if not has_edges(r.get("windows")):
             continue
+        mask = daymask(r.get("days"))
         for w in r.get("windows") or []:
             for side, action in (("s", "on"), ("e", "off")):
                 if w.get(side) is None:
                     continue
-                slot = edges.setdefault(_clock(w[side]), {}).setdefault(action, [])
-                for t in r["targets"]:
-                    if t not in slot:
-                        slot.append(t)
+                _add_edge(_clock(w[side]), action, r["targets"], mask)
 
-    # Solar edge map: solar_tid -> {"on": [...], "off": [...]}
+    # Solar edge map: solar_tid -> {"on": [[entity, mask], ...], "off": [...]}
     # Also collect the fixed sides of solar rules into the fixed-time edge map above.
     solar_e: dict[str, dict] = {}  # solar_tid -> {event, offset, on: [], off: []}
     for r in solar_live:
+        mask = daymask(r.get("days"))
         for w in r.get("windows") or []:
             for side, action in (("s", "on"), ("e", "off")):
                 v = w.get(side)
@@ -186,25 +234,31 @@ def build_engine(model: dict) -> dict:
                         solar_e[tid] = {"event": event, "offset": offset, "on": [], "off": []}
                     slot = solar_e[tid][action]
                     for t in r["targets"]:
-                        if t not in slot:
-                            slot.append(t)
+                        if not any(p[0] == t for p in slot):
+                            slot.append([t, mask])
                 else:
                     # Fixed side of a solar rule — use a plain time trigger.
-                    slot = edges.setdefault(_clock(v), {}).setdefault(action, [])
-                    for t in r["targets"]:
-                        if t not in slot:
-                            slot.append(t)
+                    _add_edge(_clock(v), action, r["targets"], mask)
 
     edge_times = sorted(edges)
     e = {
-        at: {action: sorted(edges[at][action]) for action in ("on", "off") if action in edges[at]}
+        at: {
+            action: sorted(edges[at][action], key=lambda p: p[0])
+            for action in ("on", "off")
+            if action in edges[at]
+        }
         for at in edge_times
     }
-    # Strip internal keys before storing in automation variables.
-    hs_solar_e = {
-        tid: {k: sorted(v) for k, v in data.items() if k in ("on", "off")}
-        for tid, data in sorted(solar_e.items())
-    }
+    # Strip internal keys before storing in automation variables, and drop empty on/off
+    # lists so the output matches the panel's buildEngine() byte-for-byte (admin saves and
+    # non-admin service saves then produce an identical engine).
+    hs_solar_e = {}
+    for tid, data in sorted(solar_e.items()):
+        entry = {}
+        for k in ("on", "off"):
+            if data.get(k):
+                entry[k] = sorted(data[k], key=lambda p: p[0])
+        hs_solar_e[tid] = entry
 
     triggers: list[dict] = [
         {"trigger": "homeassistant", "event": "start", "id": "boot"},
@@ -307,8 +361,14 @@ def build_engine(model: dict) -> dict:
                     {"variables": {"hs_at": "{{ trigger.now.strftime('%H:%M:00') }}"}},
                     {
                         "variables": {
-                            "hs_on": "{{ hs_e.get(hs_at, {}).get('on', []) }}",
-                            "hs_off": "{{ hs_e.get(hs_at, {}).get('off', []) }}",
+                            # Each entry is [entity, weekday-mask]; keep only those whose mask
+                            # has today set. An all-day rule's mask is all 1s, so it always passes.
+                            "hs_on": "{% set wd = now().weekday() %}{% set ns = namespace(l=[]) %}"
+                            "{% for p in hs_e.get(hs_at, {}).get('on', []) %}"
+                            "{% if p[1][wd] == '1' %}{% set ns.l = ns.l + [p[0]] %}{% endif %}{% endfor %}{{ ns.l }}",
+                            "hs_off": "{% set wd = now().weekday() %}{% set ns = namespace(l=[]) %}"
+                            "{% for p in hs_e.get(hs_at, {}).get('off', []) %}"
+                            "{% if p[1][wd] == '1' %}{% set ns.l = ns.l + [p[0]] %}{% endif %}{% endfor %}{{ ns.l }}",
                         }
                     },
                     {
@@ -332,8 +392,13 @@ def build_engine(model: dict) -> dict:
                 "then": [
                     {
                         "variables": {
-                            "hs_solar_on": "{{ hs_solar_e.get(trigger.id, {}).get('on', []) }}",
-                            "hs_solar_off": "{{ hs_solar_e.get(trigger.id, {}).get('off', []) }}",
+                            # Each entry is [entity, weekday-mask]; keep only today's.
+                            "hs_solar_on": "{% set wd = now().weekday() %}{% set ns = namespace(l=[]) %}"
+                            "{% for p in hs_solar_e.get(trigger.id, {}).get('on', []) %}"
+                            "{% if p[1][wd] == '1' %}{% set ns.l = ns.l + [p[0]] %}{% endif %}{% endfor %}{{ ns.l }}",
+                            "hs_solar_off": "{% set wd = now().weekday() %}{% set ns = namespace(l=[]) %}"
+                            "{% for p in hs_solar_e.get(trigger.id, {}).get('off', []) %}"
+                            "{% if p[1][wd] == '1' %}{% set ns.l = ns.l + [p[0]] %}{% endif %}{% endfor %}{{ ns.l }}",
                         }
                     },
                     {

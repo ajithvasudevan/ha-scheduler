@@ -55,6 +55,15 @@ save_rule:
       default: true
       selector:
         boolean:
+    days:
+      name: Weekdays
+      description: >-
+        Restrict the rule to specific weekdays, as a list of integers 0=Monday … 6=Sunday.
+        Omit, or pass null / an empty list / all seven, for every day (the default).
+      required: false
+      example: "[0, 2, 4]"
+      selector:
+        object:
 
 delete_rule:
   name: Delete schedule rule
