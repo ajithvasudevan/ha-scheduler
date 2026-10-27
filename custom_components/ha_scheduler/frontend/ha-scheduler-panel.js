@@ -882,24 +882,32 @@ class HaSchedulerPanel extends HTMLElement {
     return dt.getHours() * 60 + dt.getMinutes() + (v.offset || 0);
   }
 
+  /** Today's clock time ("HH:MM") for a solar event ("sunrise"/"sunset"), no offset
+   *  applied, or null when sun.sun is unavailable. */
+  _solarClock(sunKey) {
+    const sun = this._hass && this._hass.states["sun.sun"];
+    if (!sun) return null;
+    const raw = sun.attributes[sunKey === "sunrise" ? "next_rising" : "next_setting"];
+    if (!raw) return null;
+    const dt = new Date(raw);
+    const now = new Date();
+    // next_rising/next_setting is the next occurrence; if it's tomorrow, step back to today's.
+    if (dt.toDateString() !== now.toDateString()) dt.setDate(dt.getDate() - 1);
+    return String(dt.getHours()).padStart(2, "0") + ":" + String(dt.getMinutes()).padStart(2, "0");
+  }
+
   /** Render a solar side value as an HTML string. The event word ("Sunrise"/"Sunset")
-   *  gets a dotted-underline tooltip showing the raw solar time (no offset applied).
-   *  Any offset suffix ("+30m") is rendered outside the tooltip span. */
+   *  gets a dotted underline and the panel's styled tooltip showing the actual solar
+   *  time today (no offset applied). Any offset suffix ("+30m") is rendered outside it. */
   _solarSpan(v) {
     if (!isSolar(v)) return sideLabel(v);
     const eventName = v.sun === "sunrise" ? "Sunrise" : "Sunset";
     const offsetStr = !v.offset ? "" : (v.offset > 0 ? "+" : "") + v.offset + "m";
-    const sun = this._hass && this._hass.states["sun.sun"];
-    if (!sun) return eventName + offsetStr;
-    const attr = v.sun === "sunrise" ? "next_rising" : "next_setting";
-    const raw = sun.attributes[attr];
-    if (!raw) return eventName + offsetStr;
-    const dt = new Date(raw);
-    const now = new Date();
-    if (dt.toDateString() !== now.toDateString()) dt.setDate(dt.getDate() - 1);
-    const hh = String(dt.getHours()).padStart(2, "0");
-    const mm = String(dt.getMinutes()).padStart(2, "0");
-    return "<span title='" + hh + ":" + mm + "' style='text-decoration:underline dotted;cursor:help'>" + eventName + "</span>" + offsetStr;
+    const hhmm = this._solarClock(v.sun);
+    if (!hhmm) return eventName + offsetStr;
+    const tip = eventName + " today " + hhmm;
+    return "<span data-tip='" + esc(tip) + "' style='text-decoration:underline dotted;cursor:help'>" +
+      eventName + "</span>" + offsetStr;
   }
 
   /** Replace solar side objects in a windows array with their computed integer minutes
@@ -1622,11 +1630,19 @@ class HaSchedulerPanel extends HTMLElement {
       // Solar mode: show event selector + offset input + clock toggle.
       const v = value;
       const offset = v.offset || 0;
+      // Tooltips with today's actual sunrise/sunset times: on each option, and on the
+      // select itself (so the selected value shows its time on hover). The dialog does
+      // not re-render on a timer, so a native title tooltip is stable here.
+      const sr = this._solarClock("sunrise");
+      const ss = this._solarClock("sunset");
+      const srTip = sr ? "Sunrise today " + sr : "Sunrise time unavailable";
+      const ssTip = ss ? "Sunset today " + ss : "Sunset time unavailable";
+      const selTip = v.sun === "sunrise" ? srTip : ssTip;
       return (
         "<span class='tsel solar-tsel'>" +
-          "<select data-act='solar-event' data-i='" + i + "' data-w='" + which + "'>" +
-            "<option value='sunrise'" + (v.sun === "sunrise" ? " selected" : "") + ">Sunrise</option>" +
-            "<option value='sunset'"  + (v.sun === "sunset"  ? " selected" : "") + ">Sunset</option>" +
+          "<select data-act='solar-event' data-i='" + i + "' data-w='" + which + "' title='" + esc(selTip) + "'>" +
+            "<option value='sunrise'" + (v.sun === "sunrise" ? " selected" : "") + " title='" + esc(srTip) + "'>Sunrise</option>" +
+            "<option value='sunset'"  + (v.sun === "sunset"  ? " selected" : "") + " title='" + esc(ssTip) + "'>Sunset</option>" +
           "</select>" +
           "<input class='solar-offset' type='number' data-act='solar-offset' data-i='" + i + "' data-w='" + which + "'" +
             " value='" + offset + "' min='-480' max='480'>" +
@@ -2051,5 +2067,5 @@ window.customCards.push({
   description: "Full-screen daily on/off scheduling for any switchable entity.",
 });
 
-console.info("%c HA-SCHEDULER %c v1.4.1 ", "background:#03a9f4;color:#fff;border-radius:3px 0 0 3px",
+console.info("%c HA-SCHEDULER %c v1.4.2 ", "background:#03a9f4;color:#fff;border-radius:3px 0 0 3px",
   "background:#555;color:#fff;border-radius:0 3px 3px 0");
