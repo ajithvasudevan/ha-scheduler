@@ -160,13 +160,28 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     @callback
     def _on_ha_start(_event) -> None:
-        # Run on the event loop (hence @callback) so async_create_task is called from the
-        # loop thread, not an executor — otherwise HA's frame helper flags it.
-        hass.async_create_task(_solar_boot_restore_task())
+        # Run on the event loop (hence @callback) so the task is created from the loop
+        # thread, not an executor — otherwise HA's frame helper flags it.
+        #
+        # This MUST be a *background* task, not async_create_task: a tracked task created
+        # on the start event is awaited by Home Assistant's start-up wrap-up
+        # (async_block_till_done).  Because this one sleeps 45 s, a tracked version stalls
+        # the whole wrap-up — "Something is blocking Home Assistant from wrapping up the
+        # start up phase … continuing anyway" — and on a slow boot (several devices
+        # offline, a quick double-restart) that degraded finish leaves other integrations'
+        # triggers (the engine's own sun triggers) and device automations half-set-up.
+        # Background tasks are excluded from that wait, so the restore still runs but can
+        # never block or degrade start-up.
+        hass.async_create_background_task(
+            _solar_boot_restore_task(), name=f"{DOMAIN}_solar_boot_restore"
+        )
 
     if hass.is_running:
-        # Integration was reloaded while HA is already up; apply immediately.
-        hass.async_create_task(scheduler.async_apply_all_solar_rules())
+        # Integration was reloaded while HA is already up; apply immediately (still a
+        # background task so a reload mid-run can't wedge on a slow service call).
+        hass.async_create_background_task(
+            scheduler.async_apply_all_solar_rules(), name=f"{DOMAIN}_solar_apply_now"
+        )
     else:
         hass.bus.async_listen_once(EVENT_HOMEASSISTANT_START, _on_ha_start)
 
